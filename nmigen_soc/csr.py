@@ -1,6 +1,6 @@
 from enum import Enum
 from collections import OrderedDict
-from migen import *
+from nmigen import *
 
 
 __all__ = ["CSRField"]
@@ -14,7 +14,43 @@ ACCESS_WONCE   = Access.WONCE
 ACCESS_R_WONCE = Access.R_WONCE
 
 
-class CSRGeneric():
+class _CSRBuilderRoot:
+    """
+    """
+
+    def __init__(self, builder):
+        self._builder = builder
+
+    def __getattr__(self, name):
+        # __getattr__ in superclass is called first
+        raise AttributeError("'{}' object has no attribute '{}'"
+                             .format(type(self).__name__, name))
+
+    # TODO: Make abstract methods for add/get_fields
+
+
+class _CSRBuilderFields:
+    """
+    """
+
+    def __init__(self, builder):
+        object.__setattr__(self, "_builder", builder)   # Using "basic" __setattr__()
+
+    def __iadd__(self, fields):
+        for field in tools.flatten([fields]):
+            self._builder._add_field(field)
+        # Return itself so that it won't get destroyed
+        return self
+
+    def __setattr__(self, name, obj):
+        raise AttributeError("Cannot assign '{}' attribute; use '+=' to add a new field instead"
+                             .format(name))
+
+    def __getattr__(self, name):
+        return self._builder._get_field(name)
+
+
+class CSRGeneric(_CSRBuilderRoot):
     """
     """
 
@@ -30,28 +66,35 @@ class CSRGeneric():
         self.access = access
         self.atomic_r = atomic_r
         self.atomic_w = atomic_w
-        self.fields = OrderedDict()
+        self._fields = OrderedDict()
         # Counter for total number of bits from the list of fields
         self.bitcount = 0
         # Appending CSR fields
         for field in fields:
             self._add_field(field)
+        # A CSR field list representation
+        self.fields = self.f = _CSRBuilderFields(self)
 
     def _add_field(self, field):
         if not isinstance(field, CSRField):
             raise TypeError("{!r} is not a CSRField object"
                             .format(field))
-        if field.name in self.fields:
+        if field.name in self._fields:
             raise NameError("Field {!r} has a name that is already present in this register"
                             .format(field))
         # Assign bit position and count total number of bits
         field.bitpos = self.bitcount = self.bitcount+field.size
+        # If field doesn't specify accessibiltiy, inherit it from register-level
+        if field.access is None:
+            field.access = self.access
         # Add field to list
-        self.fields[field.name] = field
+        self._fields[field.name] = field
 
-    def __iadd__(self, fields):
-        # TODO
-        pass
+    def _get_field(self, name):
+        if name in self._fields:
+            return self._fields[name]
+        else:
+            raise AttributeError("No field named '{}' exists".format(name))
 
 
 class CSRField():
@@ -63,7 +106,7 @@ class CSRField():
         self.size = size
         self.offset = offset
         self.reset = reset
-        if not isinstance(access, Access):
+        if not isinstance(access, Access) and access is not None:
             raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
                             .format(access))
         self.access = access
