@@ -80,10 +80,30 @@ class _CSRBuilderFieldEnums:
 
 
 class CSRGeneric(_CSRBuilderRoot):
-    """
+    """A control & status register representation
+
+    Parameters
+    ----------
+    name : str
+        Name of the register
+    access : Access
+        Default read/write accessibility of the fields.
+        If the field has already been specified with an access type, this will be overridden.
+    size : int or None
+        Size of the register.
+        If unspecified, register will resize depending on the total size of its fields.
+    fields : list of Field or None
+        Fields in this register.
+        New fields can be added to the register using `csr.f +=`.
+    atomic_r : bool
+        Whether reading from this register is atomic or not
+    atomic_w : bool
+        Whether writing to this register is atomic or not
+    desc : str or None
+        Description of the register. Optional.
     """
 
-    def __init__(self, name, access, size=None, fields=None, offset=0, atomic_r=False, atomic_w=False, desc=None):
+    def __init__(self, name, access, size=None, fields=None, atomic_r=False, atomic_w=False, desc=None):
         if not isinstance(name, str):
             raise TypeError("{!r} is not a string"
                             .format(name))
@@ -99,7 +119,6 @@ class CSRGeneric(_CSRBuilderRoot):
         if fields is not None and not isinstance(fields, list):
             raise TypeError("{!r} is not a list"
                             .format(field))
-        self.offset = offset
         if not isinstance(atomic_r, int):
             raise TypeError("{!r} is not True or False"
                             .format(atomic_r))
@@ -212,6 +231,9 @@ class CSRGeneric(_CSRBuilderRoot):
         return l
 
     def get_size(self):
+        """Get the size of the register.
+        If register has not been specified with a size, this returns the total number of bits spanned by its fields
+        """
         return self.bitcount if self.size is None else self.size
 
     def __repr__(self):
@@ -219,7 +241,31 @@ class CSRGeneric(_CSRBuilderRoot):
 
 
 class CSRField(_CSRBuilderRoot):
-    """
+    """A control & status register field representation
+
+    Parameters
+    ----------
+    name : str
+        Name of the field
+    access : Access or None
+        Default read/write accessibility of the field.
+        Note that, if unspecifie, when this field is added to a CSR, this will inherit from the CSR access type.
+    size : int
+        Size of the field.
+        If unspecified, the field is of size 1.
+    startbit : int or None
+        Location of the first bit of the field in the CSR to which the field is added to.
+        If unspecified, the first bit is set to the bit immediately after the current final bit of the CSR.
+    reset : int
+        Reset (synchronous) or default (combinatorial) value of the field.
+        If unspecified, the reset value is 0.
+    enums : list of tuple like (str, int), or list of str, or None
+        List of enumerated values (enums) to be used by this field.
+        If a tuple like (str, int) is used, the int object (value) is be mapped to the str object (name).
+        If a str is used, the next integer following the current greatest value in the enum list is mapped to the str object (name).
+        New enums can be added to the field using `field.e +=`.
+    desc : str or None
+        Description of the register. Optional.
     """
 
     def __init__(self, name, access=None, size=1, startbit=None, reset=0, enums=None, desc=None):
