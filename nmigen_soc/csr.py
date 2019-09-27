@@ -209,7 +209,7 @@ class CSRGeneric(_CSRBuilderRoot):
                              .format(start, n))
         if start < 0:
             start += n
-        if end not in range(-self.get_size(), self.get_size()):
+        if end not in range(-self.get_size()+1, self.get_size()+1):
             raise IndexError("Slice cannot end before bit {} for a {}-bit value"
                              .format(end, n))
         if end < 0:
