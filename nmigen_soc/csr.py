@@ -15,6 +15,15 @@ ACCESS_WONCE   = Access.WONCE
 ACCESS_R_WONCE = Access.R_WONCE
 
 
+def is_bit_overlapping(startbit, endbit, bitrange_list):
+    """Helper function for checking if a bit range has overlapped with existing bit ranges
+    """
+    for bitrange in bitrange_list:
+        if max(0, min(endbit, bitrange[1]) - max(startbit, bitrange[0]) + 1) != 0:
+            return True
+    return False
+
+
 class _CSRBuilderRoot:
     """
     """
@@ -74,19 +83,34 @@ class CSRGeneric(_CSRBuilderRoot):
     """
     """
 
-    def __init__(self, name, size=None, fields=None, offset=0, access=None, atomic_r=False, atomic_w=False, desc=None):
+    def __init__(self, name, access, size=None, fields=None, offset=0, atomic_r=False, atomic_w=False, desc=None):
+        if not isinstance(name, str):
+            raise TypeError("{!r} is not a string"
+                            .format(name))
         self.name = name
+        if not isinstance(access, Access):
+            raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
+                            .format(access))
+        self.access = access
+        if size is not None and not isinstance(size, int):
+            raise TypeError("{!r} is not an integer"
+                            .format(size))
         self.size = size
         if fields is not None and not isinstance(fields, list):
             raise TypeError("{!r} is not a list"
                             .format(field))
         self.offset = offset
-        if access is not None and not isinstance(access, Access):
-            raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
-                            .format(access))
-        self.access = access
+        if not isinstance(atomic_r, int):
+            raise TypeError("{!r} is not True or False"
+                            .format(atomic_r))
         self.atomic_r = atomic_r
+        if not isinstance(atomic_w, int):
+            raise TypeError("{!r} is not True or False"
+                            .format(atomic_w))
         self.atomic_w = atomic_w
+        if desc is not None and not isinstance(desc, str):
+            raise TypeError("{!r} is not a string"
+                            .format(desc))
         self.desc = desc
         self._fields = OrderedDict()
         # Counter for total number of bits from the list of fields
@@ -127,14 +151,14 @@ class CSRGeneric(_CSRBuilderRoot):
         if field.name in self._fields:
             raise NameError("Field {!r} has a name that is already present in this register"
                             .format(field))
-        # Assign bit position and count total number of bits
-        if field.startbit is not None and field.startbit < self.bitcount:
-            raise AttributeError("Field {!r} starts at a bit that has been occupied by an existing field"
-                                 .format(field))
         # Assign start / end bit if not already specified
         if field.startbit is None:
             field.startbit = self.bitcount
             field.endbit = field.startbit + field.size - 1
+        # Check for start / end bit overlapping
+        if is_bit_overlapping(field.startbit, field.endbit, [(f.startbit,f.endbit) for (k,f) in self._fields.items()]):
+            raise AttributeError("Field {!r} (starting at bit {} and ending at bit {}) has bit locations that has been occupied by an existing field"
+                                 .format(field, field.startbit, field.endbit))
         # Calculate total number of bits
         self.bitcount = field.endbit+1 if field.endbit > self.bitcount-1 else self.bitcount
         # If total number of bits exceeds register size, raise error
@@ -151,15 +175,13 @@ class CSRGeneric(_CSRBuilderRoot):
         if name in self._fields:
             return self._fields[name]
         else:
-            raise AttributeError("No field named '{}' exists"
-                                 .format(name))
+            raise AttributeError("No field named '{}' exists".format(name))
 
     def _get_field_sig(self, name):
         if name in self._fields:
             return self._fields[name]._signal
         else:
-            raise AttributeError("No field named '{}' exists"
-                                 .format(name))
+            raise AttributeError("No field named '{}' exists".format(name))
 
     def _get_field_sig_slice(self, start, end):
         n = self.bitcount if self.size is None else self.size
@@ -168,7 +190,7 @@ class CSRGeneric(_CSRBuilderRoot):
                              .format(start, n))
         if start < 0:
             start += n
-        if end not in range(-self._get_size(), self._get_size()):
+        if end not in range(-self.get_size(), self.get_size()):
             raise IndexError("Slice cannot end before bit {} for a {}-bit value"
                              .format(end, n))
         if end < 0:
@@ -189,7 +211,7 @@ class CSRGeneric(_CSRBuilderRoot):
             return None
         return l
 
-    def _get_size(self):
+    def get_size(self):
         return self.bitcount if self.size is None else self.size
 
     def __repr__(self):
@@ -200,17 +222,29 @@ class CSRField(_CSRBuilderRoot):
     """
     """
 
-    def __init__(self, name, size=1, startbit=None, reset=0, access=None, enums=None, desc=None):
+    def __init__(self, name, access=None, size=1, startbit=None, reset=0, enums=None, desc=None):
+        if not isinstance(name, str):
+            raise TypeError("{!r} is not a string"
+                            .format(name))
         self.name = name
+        if access is not None and not isinstance(access, Access):
+            raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
+                            .format(access))
+        self.access = access
+        if not isinstance(size, int):
+            raise TypeError("{!r} is not an integer"
+                            .format(size))
         self.size = size
         self.reset = reset
         if not isinstance(access, Access) and access is not None:
             raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
                             .format(access))
-        self.access = access
         if enums is not None and not isinstance(enums, list):
             raise TypeError("{!r} is not a list"
                             .format(enums))
+        if desc is not None and not isinstance(desc, str):
+            raise TypeError("{!r} is not a string"
+                            .format(desc))
         self.desc = desc
         self._signal = Signal(shape=self.size, reset=self.reset)
         self._enums = OrderedDict()
