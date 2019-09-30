@@ -96,14 +96,16 @@ class CSRGeneric(_CSRBuilderRoot):
         Fields in this register.
         New fields can be added to the register using `csr.f +=`.
     atomic_r : bool
-        Whether reading from this register is atomic or not
+        Whether reading from this register is atomic or not.
+        If unspecified, it defaults to True.
     atomic_w : bool
-        Whether writing to this register is atomic or not
+        Whether writing to this register is atomic or not.
+        If unspecified, it defaults to True.
     desc : str or None
         Description of the register. Optional.
     """
 
-    def __init__(self, name, access, size=None, fields=None, atomic_r=False, atomic_w=False, desc=None):
+    def __init__(self, name, access, size=None, fields=None, atomic_r=True, atomic_w=True, desc=None):
         if not isinstance(name, str):
             raise TypeError("{!r} is not a string"
                             .format(name))
@@ -223,7 +225,7 @@ class CSRGeneric(_CSRBuilderRoot):
         # Get a list of fields covered (even partially) by the slice
         fl = [self._fields[name] for name in self._fields.keys() if (
                 self._fields[name].endbit >= start and self._fields[name].startbit < end
-            )]
+             )]
         # Make slices of individual signals
         l = [f._signal[0 if f.startbit>=start else start-f.startbit : f.size if f.endbit<end else -(f.endbit+1-end)] for f in fl]
         if len(l) == 0:
