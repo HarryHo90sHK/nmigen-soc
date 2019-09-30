@@ -236,6 +236,11 @@ class CSRGeneric(_CSRBuilderRoot):
         """
         return self.bitcount if self.size is None else self.size
 
+    def get_signal(self):
+        """Get the entire signal for the register (Cat'ed and Slice'd). 
+        """
+        return Cat(*self._get_field_sig_slice(0, self.get_size()))
+
     def __repr__(self):
         return "(csr {})".format(self.name)
 
