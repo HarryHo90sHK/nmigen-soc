@@ -49,22 +49,17 @@ class CSRBus(Elaboratable):
         # Slice list in the format of: [a.start, a.end+1, b.start, b.end+1, ...]
         self.r_slices = []
         self.w_slices = []
-        self.wo_slices = []
 
         # Per-field ccessibility check:
         for key, field in csr._fields.items():
             # Find readable bits
-            if field.access in (ACCESS_R, ACCESS_R_W, ACCESS_R_WONCE):
+            if field.access in (ACCESS_R, ACCESS_R_W):
                 self.r_slices.append(field.startbit)
                 self.r_slices.append(field.endbit+1)
             # Fine bits that can written for any number of times
             if field.access in (ACCESS_W, ACCESS_R_W):
                 self.w_slices.append(field.startbit)
                 self.w_slices.append(field.endbit+1)
-            # Fine bits that can only be written once per reset
-            if field.access in (ACCESS_WONCE, ACCESS_R_WONCE):
-                self.wo_slices.append(field.startbit)
-                self.wo_slices.append(field.endbit+1)
 
         # Helper for signal tracing
         self.csr_sig = Signal(csr.get_size())
@@ -129,20 +124,6 @@ class CSRBus(Elaboratable):
                         self.csr[self.w_slices[ind]:self.w_slices[ind+1]]
                             .eq(Cat(self.w[self.w_slices[ind]:self.w_slices[ind+1]]))
                     ]
-
-            # Data to write only once per reset
-            for ind in range(0,len(self.wo_slices),2):
-                with m.If(~self.lock):
-                    if self.csr.atomic_w:
-                        m.d.sync += [
-                            self.csr[self.wo_slices[ind]:self.wo_slices[ind+1]]
-                                .eq(Cat(self.w[self.wo_slices[ind]:self.wo_slices[ind+1]]))
-                        ]
-                    else:
-                        m.d.comb += [
-                            self.csr[self.wo_slices[ind]:self.wo_slices[ind+1]]
-                                .eq(Cat(self.w[self.wo_slices[ind]:self.wo_slices[ind+1]]))
-                        ]
 
         #
         with m.If(~self.re_i & ~self.we_i):

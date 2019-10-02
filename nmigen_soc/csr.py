@@ -3,16 +3,14 @@ from collections import OrderedDict
 from nmigen import *
 
 
-__all__ = ["Access", "ACCESS_R", "ACCESS_W", "ACCESS_R_W", "ACCESS_WONCE", "ACCESS_R_WONCE", 
+__all__ = ["Access", "ACCESS_R", "ACCESS_W", "ACCESS_R_W", 
            "CSRGeneric", "CSRField"]
 
 
-Access = Enum('Access', ('R', 'W', 'R_W', 'WONCE', 'R_WONCE'))
+Access = Enum('Access', ('R', 'W', 'R_W'))
 ACCESS_R       = Access.R
 ACCESS_W       = Access.W
 ACCESS_R_W     = Access.R_W
-ACCESS_WONCE   = Access.WONCE
-ACCESS_R_WONCE = Access.R_WONCE
 
 
 def is_bit_overlapping(startbit, endbit, bitrange_list):
