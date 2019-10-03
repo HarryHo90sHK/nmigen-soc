@@ -8,9 +8,9 @@ __all__ = ["Access", "ACCESS_R", "ACCESS_W", "ACCESS_R_W",
 
 
 Access = Enum('Access', ('R', 'W', 'R_W'))
-ACCESS_R       = Access.R
-ACCESS_W       = Access.W
-ACCESS_R_W     = Access.R_W
+ACCESS_R   = Access.R
+ACCESS_W   = Access.W
+ACCESS_R_W = Access.R_W
 
 
 def is_bit_overlapping(startbit, endbit, bitrange_list):

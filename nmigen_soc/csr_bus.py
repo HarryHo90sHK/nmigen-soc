@@ -1,50 +1,62 @@
 from nmigen import *
 
 from nmigen_soc.csr import *
+from nmigen.hdl.rec import *
 
 
 __all__ = ["CSRBus"]
+
+
+class GenericBus(Record):
+    """
+    """
+
+    def __init__(self, datwidth, adrwidth):
+        Record.__init__(self, [
+                ("stb"   ,        1 , DIR_FANIN)  ,
+                ("we"    ,        1 , DIR_FANIN)  ,
+                ("adr"   , adrwidth , DIR_FANIN)  ,
+                ("dat_r" , datwidth , DIR_FANOUT) ,
+                ("dat_w" , datwidth , DIR_FANIN)
+            ])
 
 
 class CSRBus(Elaboratable):
     """
     """
 
-    def __init__(self, csr, buswidth, baseaddr, addrmask=None):
+    def __init__(self, csr, datwidth, adrwidth, baseaddr, addrmask=None, bus=None):
         if not isinstance(csr, CSRGeneric):
             raise TypeError("{!r} is not a CSRGeneric object"
                             .format(csr))
         self.csr = csr
-        self.buswidth = buswidth
+        self.datwidth = datwidth
+        self.adrwidth = adrwidth
         self.baseaddr = baseaddr
+        self.addrmask = addrmask
         if addrmask is not None:
-            self.addrmask = addrmask
+            self.addrmask = Const(addrmask)
+        self.bus = GenericBus(datwidth, adrwidth) if bus is None else bus
+
         # Define number of bus-wide signals needed for the data
-        self.buscount = (csr.get_size() + buswidth - 1) // buswidth
+        self.buscount = (csr.get_size() + datwidth - 1) // datwidth
         # Calculate an address mask if it hasn't been specified
         if addrmask is None:
             self.addrmask = Repl(1, tools.bits_for(self.buscount))
-        # Define upper bound of the address
-        self.topaddr = self.baseaddr+self.buscount*self.buswidth
-        # Store data to be read from CSR
-        self.r = Array([Signal() for _ in range(csr.get_size())])
-        # A Signal representing the data bus for reading from CSR
-        self.dat_r = Signal(buswidth)
-        # Store data to be written to CSR
-        self.w = Array([Signal() for _ in range(csr.get_size())])
-        # A Signal representing the data bus for writing to CSR
-        self.dat_w = Signal(buswidth)
-        # Incoming strobe signals for reading/writing (from/to CSR)
-        self.re_i, self.we_i = Signal(), Signal()
-        # Incoming address signal
-        self.adr_i = Signal(self.buswidth)
-        # Reset signal and lock signal
-        self.rst = Signal(reset=1)
-        self.lock = Signal(reset=0)
-        # Outgoing acknowledge signal
-        self.ack_o = Signal(reset=0)
-        # Internal selection signal (which bus-word is being read)
-        self.sel = Signal(tools.bits_for(self.buscount))
+        # Storing data to be read from CSR and written to CSR
+        self.r, self.w = (Signal(csr.get_size()) for _ in range(2))
+        # Buffer for data to be read from CSR and written to CSR
+        self.r_b, self.w_b = (Signal(csr.get_size() - self.datwidth) for _ in range(2))
+
+        # A list of Records representing a stream of outgoing/incoming bytes for reading/writing
+        self.minicsrs = [
+            Record([
+                ("re"  ,               1) ,
+                ("dat_r" , self.datwidth) ,
+                ("we"  ,               1) ,
+                ("dat_w" , self.datwidth)
+            ]) for _ in range(self.buscount)
+        ]
 
         # Slice list in the format of: [a.start, a.end+1, b.start, b.end+1, ...]
         self.r_slices = []
@@ -67,66 +79,64 @@ class CSRBus(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
-        # Turn off reset
-        m.d.sync += self.rst.eq(0)
-        # Detect reset signal, unlock then lock again
-        with m.If(self.lock & self.rst):
-            m.d.sync += self.lock.eq(0)
-        with m.Else():
-            m.d.sync += self.lock.eq(1)
-
         # Helper for signal tracing
         m.d.comb += self.csr_sig.eq(self.csr.get_signal())
 
+        # A selection signal to determine whether the CSR address range is being accessed
+        selected = Signal()
+        m.d.comb += selected.eq(self.bus.adr[len(self.addrmask):] == (self.baseaddr >> len(self.addrmask)))
+        # Reads: comb for strobes, sync for writing back to the bus
+        for i, mc in enumerate(self.minicsrs):
+            m.d.comb += mc.re.eq(selected & self.bus.stb & ~self.bus.we &
+                                ((self.bus.adr & self.addrmask) == i))
+        m.d.sync += self.bus.dat_r[:self.datwidth].eq(0)
+        with m.If(selected):
+            with m.Switch(self.bus.adr & self.addrmask):
+                for i, mc in enumerate(self.minicsrs):
+                    with m.Case(i):
+                        m.d.sync += self.bus.dat_r[:self.datwidth].eq(mc.dat_r)
+        # Writes: comb for stobes & reading from the bus
+        for i, mc in enumerate(self.minicsrs):
+            m.d.comb += [
+                mc.we.eq(selected & self.bus.stb & self.bus.we &
+                         ((self.bus.adr & self.addrmask) == i)),
+                mc.dat_w.eq(self.bus.dat_w[:self.datwidth])
+            ]
+
         # Data to read
-        with m.If(self.re_i):
-            for ind in range(0,len(self.r_slices),2):
+        for ind in range(0,len(self.r_slices),2):
+            m.d.comb += [
+                self.r[self.r_slices[ind]:self.r_slices[ind+1]]
+                    .eq(self.csr[self.r_slices[ind]:self.r_slices[ind+1]])
+            ]
+
+        # Data to write
+        for ind in range(0,len(self.w_slices),2):
+            m.d.comb += [
+                self.csr[self.w_slices[ind]:self.w_slices[ind+1]]
+                    .eq(self.w[self.w_slices[ind]:self.w_slices[ind+1]])
+            ]
+
+        # Finalise data read
+        for i, mc in enumerate(self.minicsrs):
+            with m.If(mc.re):
                 if self.csr.atomic_r:
-                    with m.If(self.ack_o):
-                        m.d.sync += [
-                            self.ack_o.eq(0),  # Mark something is being read now
-                            Cat(self.r[self.r_slices[ind]:self.r_slices[ind+1]])
-                                    .eq(self.csr[self.r_slices[ind]:self.r_slices[ind+1]])
-                        ]
-                else:
-                    m.d.comb += [
-                        Cat(self.r[self.r_slices[ind]:self.r_slices[ind+1]])
-                                .eq(self.csr[self.r_slices[ind]:self.r_slices[ind+1]])
-                    ]
-
-        # Communication with external bus
-        with m.If((self.adr_i >= self.baseaddr) & (self.adr_i < self.topaddr)):
-            # Finalise data read 
-            with m.If(self.re_i): 
-                for i in range(self.buswidth):
-                    if self.csr.atomic_r:
-                        with m.If(~self.ack_o):
-                            m.d.sync += self.dat_r[i].eq(self.r[(self.adr_i & self.addrmask) + i])
+                    if i == 0:
+                        m.d.sync += Cat(mc.dat_r, self.r_b).eq(self.r)
                     else:
-                        m.d.sync += self.dat_r[i].eq(self.r[(self.adr_i & self.addrmask) + i])
-            # Initiate data write
-            with m.Elif(self.we_i & self.ack_o): 
-                if self.csr.atomic_w:
-                    m.d.sync += self.ack_o.eq(0)    # Mark something is being written now
-                for i in range(self.buswidth):
-                    m.d.sync += self.w[(self.adr_i & self.addrmask) + i].eq(self.dat_w[i])
-
-        # Data to write for any number of times
-        with m.If(self.we_i):
-            for ind in range(0,len(self.w_slices),2):
-                if self.csr.atomic_w:
-                    m.d.sync += [
-                        self.csr[self.w_slices[ind]:self.w_slices[ind+1]]
-                            .eq(Cat(self.w[self.w_slices[ind]:self.w_slices[ind+1]]))
-                    ]
+                        m.d.sync += mc.dat_r.eq(self.r_b[(i-1)*self.datwidth:i*self.datwidth])
                 else:
-                    m.d.comb += [
-                        self.csr[self.w_slices[ind]:self.w_slices[ind+1]]
-                            .eq(Cat(self.w[self.w_slices[ind]:self.w_slices[ind+1]]))
-                    ]
+                    m.d.comb += mc.dat_r.eq(self.r[i*self.datwidth:(i+1)*self.datwidth])
 
-        #
-        with m.If(~self.re_i & ~self.we_i):
-            m.d.sync += self.ack_o.eq(1)
+        # Initialise data write
+        for i, mc in enumerate(self.minicsrs):
+            with m.If(mc.we):
+                if self.csr.atomic_w:
+                    if i == 0:
+                        m.d.sync += self.w.eq(Cat(mc.dat_w, self.w_b))
+                    else:
+                        m.d.sync += self.w_b[(i-1)*self.datwidth:i*self.datwidth].eq(mc.dat_w)
+                else:
+                    m.d.comb += self.w[i*self.datwidth:(i+1)*self.datwidth].eq(self.dat_w)
 
         return m
