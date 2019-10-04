@@ -7,13 +7,13 @@ from nmigen.hdl.rec import *
 __all__ = ["CSRBus"]
 
 
-class GenericBus(Record):
+class Interface(Record):
     """
     """
 
     def __init__(self, datwidth, adrwidth):
         Record.__init__(self, [
-                ("stb"   ,        1 , DIR_FANIN)  ,
+                ("re"    ,        1 , DIR_FANIN)  ,
                 ("we"    ,        1 , DIR_FANIN)  ,
                 ("adr"   , adrwidth , DIR_FANIN)  ,
                 ("dat_r" , datwidth , DIR_FANOUT) ,
@@ -36,7 +36,7 @@ class CSRBus(Elaboratable):
         self.addrmask = addrmask
         if addrmask is not None:
             self.addrmask = Const(addrmask)
-        self.bus = GenericBus(datwidth, adrwidth) if bus is None else bus
+        self.bus = Interface(datwidth, adrwidth) if bus is None else bus
 
         # Define number of bus-wide signals needed for the data
         self.buscount = (csr.get_size() + datwidth - 1) // datwidth
@@ -87,7 +87,7 @@ class CSRBus(Elaboratable):
         m.d.comb += selected.eq(self.bus.adr[len(self.addrmask):] == (self.baseaddr >> len(self.addrmask)))
         # Reads: comb for strobes, sync for writing back to the bus
         for i, mc in enumerate(self.minicsrs):
-            m.d.comb += mc.re.eq(selected & self.bus.stb & ~self.bus.we &
+            m.d.comb += mc.re.eq(selected & self.bus.re &
                                 ((self.bus.adr & self.addrmask) == i))
         m.d.sync += self.bus.dat_r[:self.datwidth].eq(0)
         with m.If(selected):
@@ -98,7 +98,7 @@ class CSRBus(Elaboratable):
         # Writes: comb for stobes & reading from the bus
         for i, mc in enumerate(self.minicsrs):
             m.d.comb += [
-                mc.we.eq(selected & self.bus.stb & self.bus.we &
+                mc.we.eq(selected & self.bus.we &
                          ((self.bus.adr & self.addrmask) == i)),
                 mc.dat_w.eq(self.bus.dat_w[:self.datwidth])
             ]
