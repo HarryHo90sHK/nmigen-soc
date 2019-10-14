@@ -86,7 +86,7 @@ class Timeline(Elaboratable):
                 m.d.sync += self.events[ind]
         return m
 
-
+'''
 # DEBUG
 if __name__ == "__main__":
     cbusconv = WishboneCSR()
@@ -105,9 +105,9 @@ if __name__ == "__main__":
                 traces=p) as sim:
 
         def testbench_hello(cbusconv):
-            yield from cbusconv.wb_bus.write(0x00, 0)
-            yield from cbusconv.wb_bus.write(0x00, 0)
+            yield from cbusconv.wb_bus.write(0x00, 1)
             yield from cbusconv.wb_bus.read(0x00)
+            yield from cbusconv.wb_bus.write(0x00, 0)
             yield from cbusconv.wb_bus.read(0x00)
 
         sim.add_clock(sync_period)
@@ -116,3 +116,4 @@ if __name__ == "__main__":
         clks = 40
 
         sim.run_until(sync_period * clks, run_passive=True)
+'''

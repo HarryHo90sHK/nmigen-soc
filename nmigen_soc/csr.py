@@ -267,7 +267,7 @@ class CSRField(_CSRBuilderRoot):
     enums : list of tuple like (str, int), or list of str, or None
         List of enumerated values (enums) to be used by this field.
         If a tuple like (str, int) is used, the int object (value) is be mapped to the str object (name).
-        If a str is used, the next integer following the current greatest value in the enum list is mapped to the str object (name).
+        If a str is used, 0 is mapped to the first str object added (name), and the next integer following the current greatest value in the enum list is mapped to the str object (name).
         New enums can be added to the field using `field.e +=`.
     desc : str or None
         Description of the register. Optional.
@@ -312,6 +312,11 @@ class CSRField(_CSRBuilderRoot):
         self.signal = self.sig = self.s = self._signal
         # A field enum list representation
         self.enums = self.e = _CSRBuilderFieldEnums(self)
+
+    def __getitem__(self, key):
+        """Slicing from the field signal in units of bit
+        """
+        return self._signal[key]
 
     def _add_enum(self, enum):
         name, value = None, None
