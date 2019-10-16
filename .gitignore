@@ -2,3 +2,11 @@
 *.pyc
 /*.egg-info
 /.eggs
+
+# coverage
+/.coverage
+/htmlcov
+
+# tests
+*.vcd
+*.gtkw
