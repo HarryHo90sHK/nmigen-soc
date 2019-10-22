@@ -3,14 +3,7 @@ from collections import OrderedDict
 from nmigen import *
 
 
-__all__ = ["Access", "ACCESS_R", "ACCESS_W", "ACCESS_R_W", 
-           "CSRGeneric", "CSRField"]
-
-
-Access = Enum('Access', ('R', 'W', 'R_W'))
-ACCESS_R   = Access.R
-ACCESS_W   = Access.W
-ACCESS_R_W = Access.R_W
+__all__ = ["CSRGeneric", "CSRField"]
 
 
 def is_bit_overlapping(startbit, endbit, bitrange_list):
@@ -78,57 +71,45 @@ class _CSRBuilderFieldEnums:
 
 
 class CSRGeneric(_CSRBuilderRoot):
-    """A control & status register representation
+    """A control & status register representation.
+
+    Reading from and writing to the register is now atomic by default.
 
     Parameters
     ----------
     name : str
         Name of the register
-    access : Access
+    access : "r", "w", or "rw"
         Default read/write accessibility of the fields.
-        If the field has already been specified with an access type, this will be overridden.
-    size : int or None
-        Size of the register.
+        If the field has already been specified with an access mode, this will be overridden.
+    width : int or None
+        Width of the register.
         If unspecified, register will resize depending on the total size of its fields.
     fields : list of Field or None
         Fields in this register.
         New fields can be added to the register using `csr.f +=`.
-    atomic_r : bool
-        Whether reading from this register is atomic or not.
-        If unspecified, it defaults to True.
-    atomic_w : bool
-        Whether writing to this register is atomic or not.
-        If unspecified, it defaults to True.
     desc : str or None
         Description of the register. Optional.
     """
 
-    def __init__(self, name, access, size=None, fields=None, atomic_r=True, atomic_w=True, desc=None):
+    def __init__(self, name, access, size=None, fields=None, desc=None):
         if not isinstance(name, str):
-            raise TypeError("{!r} is not a string"
+            raise TypeError("Name must be a string, not {!r}"
                             .format(name))
         self.name = name
-        if not isinstance(access, Access):
-            raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
+        if access not in ("r", "w", "rw"):
+            raise TypeError("Access mode must be \"r\", \"w\", or \"rw\", not {!r}"
                             .format(access))
         self.access = access
-        if size is not None and not isinstance(size, int):
-            raise TypeError("{!r} is not an integer"
-                            .format(size))
-        self.size = size
+        if width is not None and not isinstance(width, int):
+            raise TypeError("Width must be an integer, not {!r}"
+                            .format(width))
+        self.width = width
         if fields is not None and not isinstance(fields, list):
-            raise TypeError("{!r} is not a list"
+            raise TypeError("Fields must be a list, not {!r}"
                             .format(field))
-        if not isinstance(atomic_r, int):
-            raise TypeError("{!r} is not True or False"
-                            .format(atomic_r))
-        self.atomic_r = atomic_r
-        if not isinstance(atomic_w, int):
-            raise TypeError("{!r} is not True or False"
-                            .format(atomic_w))
-        self.atomic_w = atomic_w
         if desc is not None and not isinstance(desc, str):
-            raise TypeError("{!r} is not a string"
+            raise TypeError("Description must be a string, not {!r}"
                             .format(desc))
         self.desc = desc
         self._fields = OrderedDict()
@@ -144,7 +125,7 @@ class CSRGeneric(_CSRBuilderRoot):
     def __getitem__(self, key):
         """Slicing from the field list in units of bit
         """
-        n = self.bitcount if self.size is None else self.size
+        n = self.bitcount if self.width is None else self.width
         l = []
         if isinstance(key, int):
             l = self._get_field_sig_slice(key, key+1)
@@ -181,7 +162,7 @@ class CSRGeneric(_CSRBuilderRoot):
         # Calculate total number of bits
         self.bitcount = field.endbit+1 if field.endbit > self.bitcount-1 else self.bitcount
         # If total number of bits exceeds register size, raise error
-        if self.size is not None and self.bitcount > self.size:
+        if self.width is not None and self.bitcount > self.width:
             raise AttributeError("This register does not have enough bit width for field {!r} of size {}"
                                  .format(field, field.size))
         # If field doesn't specify accessibiltiy, inherit it from register-level
@@ -203,13 +184,13 @@ class CSRGeneric(_CSRBuilderRoot):
             raise AttributeError("No field named '{}' exists".format(name))
 
     def _get_field_sig_slice(self, start, end):
-        n = self.bitcount if self.size is None else self.size
+        n = self.bitcount if self.width is None else self.width
         if start not in range(-n, n):
             raise IndexError("Slice cannot start at bit {} for a {}-bit value"
                              .format(start, n))
         if start < 0:
             start += n
-        if end not in range(-self.get_size()+1, self.get_size()+1):
+        if end not in range(-self.get_width()+1, self.get_width()+1):
             raise IndexError("Slice cannot end before bit {} for a {}-bit value"
                              .format(end, n))
         if end < 0:
@@ -230,16 +211,16 @@ class CSRGeneric(_CSRBuilderRoot):
             return None
         return l
 
-    def get_size(self):
-        """Get the size of the register.
-        If register has not been specified with a size, this returns the total number of bits spanned by its fields
+    def get_width(self):
+        """Get the width of the register.
+        If register has not been specified with a width, this returns the total number of bits spanned by its fields
         """
-        return self.bitcount if self.size is None else self.size
+        return self.bitcount if self.width is None else self.width
 
     def get_signal(self):
         """Get the entire signal for the register (Cat'ed and Slice'd). 
         """
-        return Cat(*self._get_field_sig_slice(0, self.get_size()))
+        return Cat(*self._get_field_sig_slice(0, self.get_width()))
 
     def __repr__(self):
         return "(csr {})".format(self.name)
@@ -252,9 +233,9 @@ class CSRField(_CSRBuilderRoot):
     ----------
     name : str
         Name of the field
-    access : Access or None
+    access : "r", "w", "rw", or None
         Default read/write accessibility of the field.
-        Note that, if unspecifie, when this field is added to a CSR, this will inherit from the CSR access type.
+        Note that, if unspecifie, when this field is added to a CSR, this will inherit from the CSR access mode.
     size : int
         Size of the field.
         If unspecified, the field is of size 1.
@@ -275,26 +256,26 @@ class CSRField(_CSRBuilderRoot):
 
     def __init__(self, name, access=None, size=1, startbit=None, reset=0, enums=None, desc=None):
         if not isinstance(name, str):
-            raise TypeError("{!r} is not a string"
+            raise TypeError("Name must be a string, not {!r}"
                             .format(name))
         self.name = name
-        if access is not None and not isinstance(access, Access):
-            raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
+        if access is not None and access not in ("r", "w", "rw"):
+            raise TypeError("Access mode must be \"r\", \"w\", \"rw\", or None, not {!r}"
                             .format(access))
         self.access = access
         if not isinstance(size, int):
-            raise TypeError("{!r} is not an integer"
+            raise TypeError("Size must be an integer, not {!r}"
                             .format(size))
         self.size = size
+        if reset is not None and not isinstance(reset, int):
+            raise TypeError("Reset value must be an integer or None, not {!r}"
+                            .format(size))
         self.reset = reset
-        if not isinstance(access, Access) and access is not None:
-            raise TypeError("{!r} is not a valid access type: should be an Access instance like ACCESS_R"
-                            .format(access))
         if enums is not None and not isinstance(enums, list):
-            raise TypeError("{!r} is not a list"
+            raise TypeError("Enum dictionary must be a list of either (name, value) pairs or names, not {!r}"
                             .format(enums))
         if desc is not None and not isinstance(desc, str):
-            raise TypeError("{!r} is not a string"
+            raise TypeError("Description must be a string, not {!r}"
                             .format(desc))
         self.desc = desc
         self._signal = Signal(shape=self.size, reset=self.reset)
@@ -322,17 +303,16 @@ class CSRField(_CSRBuilderRoot):
         name, value = None, None
         if isinstance(enum, tuple) and len(enum) == 2:
             if not isinstance(enum[0], str) or not isinstance(enum[1], int):
-                raise TypeError("{!r} is not a valid enum tuple: should be (name, value)"
+                raise TypeError("In enum dict, a tuple entry must be (name, value), not {!r}"
                                 .format(enum))
             name, value = enum[0], enum[1]
         elif isinstance(enum, str):
             if len(enum) == 0:
-                raise TypeError("'{}' is not a non-empty str as an enum name"
-                                .format(enum))
+                raise TypeError("In enum dict, a str entry should have non-empty str as name")
             # Enum values start at 0 by default
             name, value = enum, len(self._enums)
         else:
-            raise TypeError("{!r} is not a valid enum format: should be either a tuple (name, value) or a non-empty str as name"
+            raise TypeError("In enum dict, an entry must be a tuple (name, value) or a non-empty str as name"
                             .format(enum))
         # If enum is too big for the field, raise error
         if tools.bits_for(abs(value), require_sign_bit=value<0) > self.size:
