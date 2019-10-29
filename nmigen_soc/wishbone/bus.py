@@ -6,7 +6,7 @@ from nmigen.utils import log2_int
 from ..memory import MemoryMap
 
 
-__all__ = ["CycleType", "BurstTypeExt", "Interface", "Decoder"]
+__all__ = ["CycleType", "BurstTypeExt", "Interface", "Adapter", "Decoder"]
 
 
 class CycleType(Enum):
@@ -141,6 +141,50 @@ class Interface(Record):
         super().__init__(layout, name=name, src_loc_at=1)
 
 
+class Adapter(Elaboratable):
+    """
+    """
+    def __init__(self, coder):
+        self.bus   = coder.bus
+        self._map  = coder._map
+        self._subs = coder._subs
+
+    def elaborate(self, platform):
+        m = Module()
+
+        fanins = dict()
+        for name in ["ack", "err", "rty", "stall"]:
+            fanins[name] = 0
+
+        with m.Switch(self.bus.adr):
+            for sub_map, (sub_pat, sub_ratio) in self._map.window_patterns():
+                sub_bus = self._subs[sub_map]
+                m.d.comb += [
+                    # address translation from bus to sub bus
+                    sub_bus.adr.eq(self.bus.adr << log2_int(sub_ratio)),
+                    # SEL translation from bus to sub bus
+                    sub_bus.sel.eq(Cat(Repl(sel, sub_ratio) for sel in self.bus.sel))
+                ]
+                with m.Case(sub_pat[:-log2_int(self.bus.data_width // self.bus.granularity)]):
+                    m.d.comb += [
+                        # combine CYC with sub's SEL implicitly from the Case check
+                        sub_bus.cyc.eq(self.bus.cyc),
+                        # multiplex data return
+                        self.bus.dat_r.eq(sub_bus.dat_r),
+                    ]
+                    # OR-ing ACK, ERR, RTY and STALL in all sub busses
+                    for name in fanins:
+                        if hasattr(sub_bus, name):
+                            fanins[name] |= getattr(sub_bus, name)
+
+        # combine each of the OR-ed ACK, ERR, RTY and STALL signals
+        for name in fanins:
+            if hasattr(self.bus, name):
+                m.d.comb += getattr(self.bus, name).eq(fanins[name])
+
+        return m
+
+
 class Decoder(Elaboratable):
     """Wishbone bus decoder.
 
@@ -162,7 +206,7 @@ class Decoder(Elaboratable):
     Attributes
     ----------
     bus : :class:`Interface`
-        CSR bus providing access to subordinate buses.
+        Wishbone bus providing access to subordinate buses.
     """
     def __init__(self, *, addr_width, data_width, granularity=None, features=frozenset(),
                  alignment=0):
@@ -221,48 +265,14 @@ class Decoder(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
-        ack_fanin   = 0
-        err_fanin   = 0
-        rty_fanin   = 0
-        stall_fanin = 0
+        m.submodules += Adapter(self)
 
         with m.Switch(self.bus.adr):
             for sub_map, (sub_pat, sub_ratio) in self._map.window_patterns():
                 sub_bus = self._subs[sub_map]
-
-                m.d.comb += [
-                    sub_bus.adr.eq(self.bus.adr << log2_int(sub_ratio)),
-                    sub_bus.dat_w.eq(self.bus.dat_w),
-                    sub_bus.sel.eq(Cat(Repl(sel, sub_ratio) for sel in self.bus.sel)),
-                    sub_bus.we.eq(self.bus.we),
-                    sub_bus.stb.eq(self.bus.stb),
-                ]
-                if hasattr(sub_bus, "lock"):
-                    m.d.comb += sub_bus.lock.eq(getattr(self.bus, "lock", 0))
-                if hasattr(sub_bus, "cti"):
-                    m.d.comb += sub_bus.cti.eq(getattr(self.bus, "cti", CycleType.CLASSIC))
-                if hasattr(sub_bus, "bte"):
-                    m.d.comb += sub_bus.bte.eq(getattr(self.bus, "bte", BurstTypeExt.LINEAR))
-
-                with m.Case(sub_pat[:-log2_int(self.bus.data_width // self.bus.granularity)]):
-                    m.d.comb += [
-                        sub_bus.cyc.eq(self.bus.cyc),
-                        self.bus.dat_r.eq(sub_bus.dat_r),
-                    ]
-                    ack_fanin |= sub_bus.ack
-                    if hasattr(sub_bus, "err"):
-                        err_fanin |= sub_bus.err
-                    if hasattr(sub_bus, "rty"):
-                        rty_fanin |= sub_bus.rty
-                    if hasattr(sub_bus, "stall"):
-                        stall_fanin |= sub_bus.stall
-
-        m.d.comb += self.bus.ack.eq(ack_fanin)
-        if hasattr(self.bus, "err"):
-            m.d.comb += self.bus.err.eq(err_fanin)
-        if hasattr(self.bus, "rty"):
-            m.d.comb += self.bus.rty.eq(rty_fanin)
-        if hasattr(self.bus, "stall"):
-            m.d.comb += self.bus.stall.eq(stall_fanin)
+                for name, width, direction in sub_bus.layout:
+                    if name not in ["adr", "sel", "cyc"] and direction == Direction.FANOUT:
+                        # default to 0 effectively applies to LOCK, CTI and BTE
+                        m.d.comb += getattr(sub_bus, name).eq(getattr(self.bus, name, 0))
 
         return m
