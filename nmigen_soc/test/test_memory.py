@@ -131,8 +131,8 @@ class MemoryMapTestCase(unittest.TestCase):
         memory_map.add_resource("a", size=1)
         memory_map.add_resource("b", size=2)
         self.assertEqual(list(memory_map.resources()), [
-            ("a", (0, 1)),
-            ("b", (1, 3)),
+            ("a", (0, 1), None),
+            ("b", (1, 3), None),
         ])
 
     def test_add_window(self):
@@ -205,8 +205,8 @@ class MemoryMapTestCase(unittest.TestCase):
         window_2 = MemoryMap(addr_width=12, data_width=16)
         memory_map.add_window(window_2)
         self.assertEqual(list(memory_map.windows()), [
-            (window_1, (0, 0x200, 2)),
-            (window_2, (0x1000, 0x2000, 1)),
+            (window_1, (0, 0x200, 2), None),
+            (window_2, (0x1000, 0x2000, 1), None),
         ])
 
     def test_iter_window_patterns(self):

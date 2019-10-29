@@ -89,8 +89,14 @@ class MemoryMap:
         self.alignment  = alignment
 
         self._ranges    = _RangeMap()
-        self._resources = dict()
-        self._windows   = dict()
+
+        # Dicts for lookup using a given resource (that is represented by any type)
+        self._resources       = dict()      # address range
+        self._resource_busses = dict()      # physical interface / bus
+
+        # Dicts for lookup using a given MemoryMap window
+        self._windows       = dict()        # address range & num of contiguous addr accessed per transaction
+        self._window_busses = dict()        # physcial interface / bus
 
         self._next_addr = 0
 
@@ -203,12 +209,19 @@ class MemoryMap:
 
         addr_range = self._compute_addr_range(addr, size, alignment=alignment)
         self._ranges.insert(addr_range, resource)
+        # Add to resource dict
         self._resources[resource] = addr_range
+        # Add to resource bus dict
+        if hasattr(resource, "bus"):
+            self._resource_busses[resource] = resource.bus
+        else:
+            self._resource_busses[resource] = None
         self._next_addr = addr_range.stop
         return addr_range.start, addr_range.stop
 
     def resources(self):
-        """Iterate local resources and their address ranges.
+        """Iterate local resources, their address ranges and their bus representations (if 
+        available).
 
         Non-recursively iterate resources in ascending order of their address.
 
@@ -217,7 +230,8 @@ class MemoryMap:
         A tuple ``resource, (start, end)`` describing the address range assigned to the resource.
         """
         for resource, resource_range in self._resources.items():
-            yield resource, (resource_range.start, resource_range.stop)
+            yield (resource, (resource_range.start, resource_range.stop), 
+                   self._resource_busses[resource])
 
     def add_window(self, window, *, addr=None, sparse=None):
         """Add a window.
@@ -302,12 +316,19 @@ class MemoryMap:
 
         addr_range = self._compute_addr_range(addr, size, ratio, alignment=alignment)
         self._ranges.insert(addr_range, window)
+        # Add to window dict
         self._windows[window] = addr_range
+        # Add to window bus dict
+        if hasattr(window, "bus"):
+            self._window_busses[window] = window.bus
+        else:
+            self._window_busses[window] = None
         self._next_addr = addr_range.stop
         return addr_range.start, addr_range.stop, addr_range.step
 
     def windows(self):
-        """Iterate local windows and their address ranges.
+        """Iterate local windows, their address ranges and their bus representations (if 
+        available).
 
         Non-recursively iterate windows in ascending order of their address.
 
@@ -319,7 +340,8 @@ class MemoryMap:
         the wider bus. Otherwise, it is always 1.
         """
         for window, window_range in self._windows.items():
-            yield window, (window_range.start, window_range.stop, window_range.step)
+            yield (window, (window_range.start, window_range.stop, window_range.step), 
+                   self._window_busses[window])
 
     def window_patterns(self):
         """Iterate local windows and patterns that match their address ranges.
