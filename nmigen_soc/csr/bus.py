@@ -25,6 +25,10 @@ class Element(Record):
         def writable(self):
             return self == self.W or self == self.RW
 
+        def does_allow(self, access):
+            return (not (not self.readable() and access.readable()) 
+                and not (not self.writable() and access.writable()))
+
     """Peripheral-side CSR interface.
 
     A low-level interface to a single atomically readable and writable register in a peripheral.
