@@ -1,12 +1,30 @@
-from functools import reduce
+import enum
 from nmigen import *
-from nmigen import tracer
+from nmigen.utils import log2_int
+
+from ..memory import MemoryMap
 
 
-__all__ = ["CSRElement", "CSRMultiplexer"]
+__all__ = ["Element", "Interface", "Decoder", "Multiplexer"]
 
 
-class CSRElement(Record):
+class Element(Record):
+    class Access(enum.Enum):
+        """Register access mode.
+
+        Coarse access mode for the entire register. Individual fields can have more restrictive
+        access mode, e.g. R/O fields can be a part of an R/W register.
+        """
+        R  = "r"
+        W  = "w"
+        RW = "rw"
+
+        def readable(self):
+            return self == self.R or self == self.RW
+
+        def writable(self):
+            return self == self.W or self == self.RW
+
     """Peripheral-side CSR interface.
 
     A low-level interface to a single atomically readable and writable register in a peripheral.
@@ -17,6 +35,8 @@ class CSRElement(Record):
     ----------
     width : int
         Width of the register.
+    access : :class:`Access`
+        Register access mode.
     name : str
         Name of the underlying record.
 
@@ -37,39 +57,40 @@ class CSRElement(Record):
         if not isinstance(width, int) or width < 0:
             raise ValueError("Width must be a non-negative integer, not {!r}"
                              .format(width))
-        if access not in ("r", "w", "rw"):
+        if not isinstance(access, Element.Access) and access not in ("r", "w", "rw"):
             raise ValueError("Access mode must be one of \"r\", \"w\", or \"rw\", not {!r}"
                              .format(access))
-
-        self.width  = int(width)
-        self.access = access
+        self.width  = width
+        self.access = Element.Access(access)
 
         layout = []
-        if "r" in self.access:
+        if self.access.readable():
             layout += [
                 ("r_data", width),
                 ("r_stb",  1),
             ]
-        if "w" in self.access:
+        if self.access.writable():
             layout += [
                 ("w_data", width),
                 ("w_stb",  1),
             ]
         super().__init__(layout, name=name, src_loc_at=1)
 
+    # FIXME: get rid of this
+    __hash__ = object.__hash__
 
-class CSRMultiplexer(Elaboratable):
+
+class Interface(Record):
     """CPU-side CSR interface.
 
-    A low-level interface to a set of peripheral CSR registers that implements address-based
-    multiplexing and atomic updates of wide registers.
+    A low-level interface to a set of atomically readable and writable peripheral CSR registers.
 
     Operation
     ---------
 
-    The CSR multiplexer splits each CSR register into chunks according to its data width. Each
-    chunk is assigned an address, and the first chunk of each register always has the provided
-    minimum alignment. This allows accessing CSRs of any size using any datapath width.
+    CSR registers mapped to the CSR bus are split into chunks according to the bus data width.
+    Each chunk is assigned a consecutive address on the bus. This allows accessing CSRs of any
+    size using any datapath width.
 
     When the first chunk of a register is read, the value of a register is captured, and reads
     from subsequent chunks of the same register return the captured values. When any chunk except
@@ -77,12 +98,73 @@ class CSRMultiplexer(Elaboratable):
     chunk writes the captured value to the register. This allows atomically accessing CSRs larger
     than datapath width.
 
-    Reads to padding bytes return zeroes, and writes to padding bytes are ignored.
+    Parameters
+    ----------
+    addr_width : int
+        Address width. At most ``(2 ** addr_width) * data_width`` register bits will be available.
+    data_width : int
+        Data width. Registers are accessed in ``data_width`` sized chunks.
+    alignment : int
+        Register and window alignment. See :class:`MemoryMap`.
+    name : str
+        Name of the underlying record.
 
-    Writes are registered, and add 1 cycle of latency.
+    Attributes
+    ----------
+    memory_map : MemoryMap
+        Map of the bus.
+    addr : Signal(addr_width)
+        Address for reads and writes.
+    r_data : Signal(data_width)
+        Read data. Valid on the next cycle after ``r_stb`` is asserted. Otherwise, zero. (Keeping
+        read data of an unused interface at zero simplifies multiplexers.)
+    r_stb : Signal()
+        Read strobe. If ``addr`` points to the first chunk of a register, captures register value
+        and causes read side effects to be performed (if any). If ``addr`` points to any chunk
+        of a register, latches the captured value to ``r_data``. Otherwise, latches zero
+        to ``r_data``.
+    w_data : Signal(data_width)
+        Write data. Must be valid when ``w_stb`` is asserted.
+    w_stb : Signal()
+        Write strobe. If ``addr`` points to the last chunk of a register, writes captured value
+        to the register and causes write side effects to be performed (if any). If ``addr`` points
+        to any chunk of a register, latches ``w_data`` to the captured value. Otherwise, does
+        nothing.
+    """
 
-    Wide registers
-    --------------
+    def __init__(self, *, addr_width, data_width, alignment=0, name=None):
+        if not isinstance(addr_width, int) or addr_width <= 0:
+            raise ValueError("Address width must be a positive integer, not {!r}"
+                             .format(addr_width))
+        if not isinstance(data_width, int) or data_width <= 0:
+            raise ValueError("Data width must be a positive integer, not {!r}"
+                             .format(data_width))
+        self.addr_width = addr_width
+        self.data_width = data_width
+        self.memory_map = MemoryMap(addr_width=addr_width, data_width=data_width,
+                                    alignment=alignment)
+
+        super().__init__([
+            ("addr",    addr_width),
+            ("r_data",  data_width),
+            ("r_stb",   1),
+            ("w_data",  data_width),
+            ("w_stb",   1),
+        ], name=name, src_loc_at=1)
+
+
+class Multiplexer(Elaboratable):
+    """CSR register multiplexer.
+
+    An address-based multiplexer for CSR registers implementing atomic updates.
+
+    Latency
+    -------
+
+    Writes are registered, and are performed 1 cycle after ``w_stb`` is asserted.
+
+    Alignment
+    ---------
 
     Because the CSR bus conserves logic and routing resources, it is common to e.g. access
     a CSR bus with an *n*-bit data path from a CPU with a *k*-bit datapath (*k>n*) in cases
@@ -107,101 +189,40 @@ class CSRMultiplexer(Elaboratable):
     Parameters
     ----------
     addr_width : int
-        Address width. At most ``(2 ** addr_width) * data_width`` register bits will be available.
+        Address width. See :class:`Interface`.
     data_width : int
-        Data width. Registers are accessed in ``data_width`` sized chunks.
+        Data width. See :class:`Interface`.
     alignment : int
-        Register alignment. The address assigned to each register will be a multiple of
-        ``2 ** alignment``.
+        Register alignment. See :class:`Interface`.
 
     Attributes
     ----------
-    addr : Signal(addr_width)
-        Address for reads and writes.
-    r_data : Signal(data_width)
-        Read data. Valid on the next cycle after ``r_stb`` is asserted.
-    r_stb : Signal()
-        Read strobe. If ``addr`` points to the first chunk of a register, captures register value
-        and causes read side effects to be performed (if any). If ``addr`` points to any chunk
-        of a register, latches the captured value to ``r_data``. Otherwise, latches zero
-        to ``r_data``.
-    w_data : Signal(data_width)
-        Write data. Must be valid when ``w_stb`` is asserted.
-    w_stb : Signal()
-        Write strobe. If ``addr`` points to the last chunk of a register, writes captured value
-        to the register and causes write side effects to be performed (if any). If ``addr`` points
-        to any chunk of a register, latches ``w_data`` to the captured value. Otherwise, does
-        nothing.
+    bus : :class:`Interface`
+        CSR bus providing access to registers.
     """
     def __init__(self, *, addr_width, data_width, alignment=0):
-        if not isinstance(addr_width, int) or addr_width <= 0:
-            raise ValueError("Address width must be a positive integer, not {!r}"
-                             .format(addr_width))
-        if not isinstance(data_width, int) or data_width <= 0:
-            raise ValueError("Data width must be a positive integer, not {!r}"
-                             .format(data_width))
-        if not isinstance(alignment, int) or alignment < 0:
-            raise ValueError("Alignment must be a non-negative integer, not {!r}"
-                             .format(alignment))
-
-        self.addr_width = int(addr_width)
-        self.data_width = int(data_width)
-        self.alignment  = alignment
-
-        self._next_addr = 0
-        self._elements  = dict()
-
-        self.addr   = Signal(addr_width)
-        self.r_data = Signal(data_width)
-        self.r_stb  = Signal()
-        self.w_data = Signal(data_width)
-        self.w_stb  = Signal()
-
-    def add(self, element):
-        """Add a register.
-
-        Arguments
-        ---------
-        element : CSRElement
-            Interface of the register.
-
-        Return value
-        ------------
-        An ``(addr, size)`` tuple, where ``addr`` is the address assigned to the first chunk of
-        the register, and ``size`` is the amount of chunks it takes, which may be greater than
-        ``element.size // self.data_width`` due to alignment.
-        """
-        if not isinstance(element, CSRElement):
-            raise TypeError("Element must be an instance of CSRElement, not {!r}"
-                            .format(element))
-
-        addr = self.align_to(self.alignment)
-        self._next_addr += (element.width + self.data_width - 1) // self.data_width
-        size = self.align_to(self.alignment) - addr
-        self._elements[addr] = element, size
-        return addr, size
+        self.bus  = Interface(addr_width=addr_width, data_width=data_width, alignment=alignment,
+                              name="csr")
+        self._map = self.bus.memory_map
 
     def align_to(self, alignment):
-        """Align the next register explicitly.
+        """Align the implicit address of the next register.
 
-        Arguments
-        ---------
-        alignment : int
-            Register alignment. The address assigned to the next register will be a multiple of
-            ``2 ** alignment`` or ``2 ** self.alignment``, whichever is greater.
-
-        Return value
-        ------------
-        Address of the next register.
+        See :meth:`MemoryMap.align_to` for details.
         """
-        if not isinstance(alignment, int) or alignment < 0:
-            raise ValueError("Alignment must be a non-negative integer, not {!r}"
-                             .format(alignment))
+        return self._map.align_to(alignment)
 
-        align_chunks = 1 << alignment
-        if self._next_addr % align_chunks != 0:
-            self._next_addr += align_chunks - (self._next_addr % align_chunks)
-        return self._next_addr
+    def add(self, element, *, addr=None, alignment=None):
+        """Add a register.
+
+        See :meth:`MemoryMap.add_resource` for details.
+        """
+        if not isinstance(element, Element):
+            raise TypeError("Element must be an instance of csr.Element, not {!r}"
+                            .format(element))
+
+        size = (element.width + self.bus.data_width - 1) // self.bus.data_width
+        return self._map.add_resource(element, size=size, addr=addr, alignment=alignment)
 
     def elaborate(self, platform):
         m = Module()
@@ -213,42 +234,127 @@ class CSRMultiplexer(Elaboratable):
         # 2-AND or 2-OR gates.
         r_data_fanin = 0
 
-        for elem_addr, (elem, elem_size) in self._elements.items():
+        for elem, (elem_start, elem_end) in self._map.resources():
             shadow = Signal(elem.width, name="{}__shadow".format(elem.name))
-            if "w" in elem.access:
+            if elem.access.readable():
+                shadow_en = Signal(elem_end - elem_start, name="{}__shadow_en".format(elem.name))
+                m.d.sync += shadow_en.eq(0)
+            if elem.access.writable():
                 m.d.comb += elem.w_data.eq(shadow)
+                m.d.sync += elem.w_stb.eq(0)
 
             # Enumerate every address used by the register explicitly, rather than using
             # arithmetic comparisons, since some toolchains (e.g. Yosys) are too eager to infer
             # carry chains for comparisons, even with a constant. (Register sizes don't have
             # to be powers of 2.)
-            with m.Switch(self.addr):
-                for chunk_offset in range(elem_size):
-                    chunk_slice = slice(chunk_offset * self.data_width,
-                                        (chunk_offset + 1) * self.data_width)
-                    with m.Case(elem_addr + chunk_offset):
-                        if "r" in elem.access:
-                            chunk_r_stb = Signal(self.data_width,
-                                name="{}__r_stb_{}".format(elem.name, chunk_offset))
-                            r_data_fanin |= Mux(chunk_r_stb, shadow[chunk_slice], 0)
-                            if chunk_offset == 0:
-                                m.d.comb += elem.r_stb.eq(self.r_stb)
-                                with m.If(self.r_stb):
+            with m.Switch(self.bus.addr):
+                for chunk_offset, chunk_addr in enumerate(range(elem_start, elem_end)):
+                    shadow_slice = shadow.word_select(chunk_offset, self.bus.data_width)
+
+                    with m.Case(chunk_addr):
+                        if elem.access.readable():
+                            r_data_fanin |= Mux(shadow_en[chunk_offset], shadow_slice, 0)
+                            if chunk_addr == elem_start:
+                                m.d.comb += elem.r_stb.eq(self.bus.r_stb)
+                                with m.If(self.bus.r_stb):
                                     m.d.sync += shadow.eq(elem.r_data)
                             # Delay by 1 cycle, allowing reads to be pipelined.
-                            m.d.sync += chunk_r_stb.eq(self.r_stb)
+                            m.d.sync += shadow_en.eq(self.bus.r_stb << chunk_offset)
 
-                        if "w" in elem.access:
-                            if chunk_offset == elem_size - 1:
+                        if elem.access.writable():
+                            if chunk_addr == elem_end - 1:
                                 # Delay by 1 cycle, avoiding combinatorial paths through
                                 # the CSR bus and into CSR registers.
-                                m.d.sync += elem.w_stb.eq(self.w_stb)
-                            with m.If(self.w_stb):
-                                m.d.sync += shadow[chunk_slice].eq(self.w_data)
+                                m.d.sync += elem.w_stb.eq(self.bus.w_stb)
+                            with m.If(self.bus.w_stb):
+                                m.d.sync += shadow_slice.eq(self.bus.w_data)
 
-                with m.Default():
-                    m.d.sync += shadow.eq(0)
+        m.d.comb += self.bus.r_data.eq(r_data_fanin)
 
-        m.d.comb += self.r_data.eq(r_data_fanin)
+        return m
+
+
+class Decoder(Elaboratable):
+    """CSR bus decoder.
+
+    An address decoder for subordinate CSR buses.
+
+    Usage
+    -----
+
+    Although there is no functional difference between adding a set of registers directly to
+    a :class:`Multiplexer` and adding a set of registers to multiple :class:`Multiplexer`s that are
+    aggregated with a :class:`Decoder`, hierarchical CSR buses are useful for organizing
+    a hierarchical design. If many peripherals are directly served by a single
+    :class:`Multiplexer`, a very large amount of ports will connect the peripheral registers with
+    the decoder, and the cost of decoding logic would not be attributed to specific peripherals.
+    With a decoder, only five signals per peripheral will be used, and the logic could be kept
+    together with the peripheral.
+
+    Parameters
+    ----------
+    addr_width : int
+        Address width. See :class:`Interface`.
+    data_width : int
+        Data width. See :class:`Interface`.
+    alignment : int
+        Window alignment. See :class:`Interface`.
+
+    Attributes
+    ----------
+    bus : :class:`Interface`
+        CSR bus providing access to subordinate buses.
+    """
+    def __init__(self, *, addr_width, data_width, alignment=0):
+        self.bus   = Interface(addr_width=addr_width, data_width=data_width, alignment=alignment,
+                               name="csr")
+        self._map  = self.bus.memory_map
+        self._subs = dict()
+
+    def align_to(self, alignment):
+        """Align the implicit address of the next window.
+
+        See :meth:`MemoryMap.align_to` for details.
+        """
+        return self._map.align_to(alignment)
+
+    def add(self, sub_bus, *, addr=None):
+        """Add a window to a subordinate bus.
+
+        See :meth:`MemoryMap.add_resource` for details.
+        """
+        if not isinstance(sub_bus, Interface):
+            raise TypeError("Subordinate bus must be an instance of csr.Interface, not {!r}"
+                            .format(sub_bus))
+        if sub_bus.data_width != self.bus.data_width:
+            raise ValueError("Subordinate bus has data width {}, which is not the same as "
+                             "decoder data width {}"
+                             .format(sub_bus.data_width, self.bus.data_width))
+        self._subs[sub_bus.memory_map] = sub_bus
+        return self._map.add_window(sub_bus.memory_map, addr=addr)
+
+    def elaborate(self, platform):
+        m = Module()
+
+        # See Multiplexer.elaborate above.
+        r_data_fanin = 0
+
+        with m.Switch(self.bus.addr):
+            for sub_map, (sub_pat, sub_ratio) in self._map.window_patterns():
+                assert sub_ratio == 1
+
+                sub_bus = self._subs[sub_map]
+                m.d.comb += sub_bus.addr.eq(self.bus.addr[:sub_bus.addr_width])
+
+                # The CSR bus interface is defined to output zero when idle, allowing us to avoid
+                # adding a multiplexer here.
+                r_data_fanin |= sub_bus.r_data
+                m.d.comb += sub_bus.w_data.eq(self.bus.w_data)
+
+                with m.Case(sub_pat):
+                    m.d.comb += sub_bus.r_stb.eq(self.bus.r_stb)
+                    m.d.comb += sub_bus.w_stb.eq(self.bus.w_stb)
+
+        m.d.comb += self.bus.r_data.eq(r_data_fanin)
 
         return m
