@@ -4,232 +4,489 @@ from nmigen.hdl.rec import Layout
 from nmigen.back.pysim import *
 
 from ..csr.dsl import *
+from ..csr.bus import Element
 
 
-class CSRFieldEnumBuilderTestCase(unittest.TestCase):
+class FieldEnumBuilderTestCase(unittest.TestCase):
     def test_tuples(self):
-        f = CSRField("f_enums_tuples", width=10)
-        f.e += [
-            ("ENUM_A", -0),
-            ("ENUM_B", -10),
-            ("ENUM_C", 999)
-        ]
-        self.assertEqual(f.e.ENUM_A, -0)
-        self.assertEqual(f.e.ENUM_B, -10)
-        self.assertEqual(f.e.ENUM_C, 999)
+        with Field("f_enums_tuples", width=10) as f:
+            f.e += [
+                ("ENUM_A", -0),
+                ("ENUM_B", -10),
+                ("ENUM_C", 999)
+            ]
+        self.assertEqual(f.Enums.ENUM_A.value, -0)
+        self.assertEqual(f.Enums.ENUM_B.value, -10)
+        self.assertEqual(f.Enums.ENUM_C.value, 999)
 
     def test_ints(self):
-        f = CSRField("f_enums_ints", width=2)
-        f.e += ["VERY_BAD", "BAD", "GOOD", "VERY_GOOD"]
-        self.assertEqual(f.e.VERY_BAD, 0)
-        self.assertEqual(f.e.BAD, 1)
-        self.assertEqual(f.e.GOOD, 2)
-        self.assertEqual(f.e.VERY_GOOD, 3)
+        with Field("f_enums_ints", width=2) as f:
+            f.e += ["VERY_BAD", "BAD", "GOOD", "VERY_GOOD"]
+        self.assertEqual(f.Enums.VERY_BAD.value, 0)
+        self.assertEqual(f.Enums.BAD.value, 1)
+        self.assertEqual(f.Enums.GOOD.value, 2)
+        self.assertEqual(f.Enums.VERY_GOOD.value, 3)
 
     def test_mixed(self):
-        f = CSRField("f_enums_ints", width=8)
-        f.e += [
-            "e0", #0
-            ("e1", -50), 
-            ("e2", -100),
-            "e3", #1
-            "e4", #2
-            ("e5", 50),
-            "e6", #51
-        ]
-        self.assertEqual(f.e.e0, 0)
-        self.assertEqual(f.e.e1, -50)
-        self.assertEqual(f.e.e2, -100)
-        self.assertEqual(f.e.e3, 1)
-        self.assertEqual(f.e.e4, 2)
-        self.assertEqual(f.e.e5, 50)
-        self.assertEqual(f.e.e6, 51)
+        with Field("f_enums_ints", width=8) as f:
+            f.e += [
+                "e0", #0
+                ("e1", -50), 
+                ("e2", -100),
+                "e3", #1
+                "e4", #2
+                ("e5", 50),
+                "e6", #51
+            ]
+        self.assertEqual(f.Enums.e0.value, 0)
+        self.assertEqual(f.Enums.e1.value, -50)
+        self.assertEqual(f.Enums.e2.value, -100)
+        self.assertEqual(f.Enums.e3.value, 1)
+        self.assertEqual(f.Enums.e4.value, 2)
+        self.assertEqual(f.Enums.e5.value, 50)
+        self.assertEqual(f.Enums.e6.value, 51)
 
 
-class CSRFieldTestCase(unittest.TestCase):
+class FieldTestCase(unittest.TestCase):
     def test_1_ro(self):
-        f = CSRField("f_1_ro", access="r", 
-                     desc="1-bit read-only field")
-        # CSRField attributes
+        f = Field("f_1_ro", access="r", 
+                  desc="1-bit read-only field")
+        # Field attributes
         self.assertEqual(f.name, "f_1_ro")
-        self.assertEqual(f.access, "r")
+        self.assertEqual(f.access, Element.Access.R)
         self.assertEqual(f.width, 1)
         self.assertEqual(f.startbit, None)
         self.assertEqual(f.endbit, None)
-        self.assertEqual(f.reset, 0)
+        self.assertEqual(f.reset_value, 0)
         self.assertEqual(f.desc, "1-bit read-only field")
-        # CSRField._signal attributes
+        # Field.signal attributes
         self.assertEqual(f.s.reset, 0)
 
     def test_8_rw(self):
-        f = CSRField("f_8_rw", access="rw", 
-                     width=8, startbit=10, reset=255,
-                     enums=[("OFF", 0), ("ON", 255)],
-                     desc="8-bit read/write field, 2 possible values")
-        # CSRField attributes
+        f = Field("f_8_rw", access="rw", 
+                  width=8, startbit=10, reset_value=255,
+                  enums=[("OFF", 0), ("ON", 255)],
+                  desc="8-bit read/write field, 2 possible values")
+        # Field attributes
         self.assertEqual(f.name, "f_8_rw")
-        self.assertEqual(f.access, "rw")
+        self.assertEqual(f.access, Element.Access.RW)
         self.assertEqual(f.width, 8)
         self.assertEqual(f.startbit, 10)
         self.assertEqual(f.endbit, 17)
-        self.assertEqual(f.reset, 255)
+        self.assertEqual(f.reset_value, 255)
         self.assertEqual(f.desc, "8-bit read/write field, 2 possible values")
-        # CSRField._signal attributes
+        # Field.signal attributes
         self.assertEqual(f.s.reset, 255)
-        # CSRField._enums attributes
-        self.assertEqual(f.e.ON, 255)
-        self.assertEqual(f.e.OFF, 0)
+        # Field._enums attributes
+        self.assertEqual(f.Enums.ON.value, 255)
+        self.assertEqual(f.Enums.OFF.value, 0)
 
     def test_10_wo(self):
-        f = CSRField("f_10_wo", access="w", 
-                     width=10, startbit=77, reset=64,
-                     enums=[("MIN", 0), ("MAX", 1023)],
-                     desc="10-bit write-only field, 6 possible values")
-        f.e += [("VERY_LOW", 2**2), ("MODERATELY_LOW", 2**4),
-                ("VERY_HIGH", 2**8), ("MODERATELY_HIGH", 2**6)]
-        # CSRField attributes
+        f = Field("f_10_wo", access="w", 
+                  width=10, startbit=77, reset_value=64,
+                  enums=[("MIN", 0), ("MAX", 1023)],
+                  desc="10-bit write-only field, 6 possible values")
+        with f as field:
+            field.e += [("VERY_LOW", 2**2), ("MODERATELY_LOW", 2**4),
+                        ("VERY_HIGH", 2**8), ("MODERATELY_HIGH", 2**6)]
+        # Field attributes
         self.assertEqual(f.name, "f_10_wo")
-        self.assertEqual(f.access, "w")
+        self.assertEqual(f.access, Element.Access.W)
         self.assertEqual(f.width, 10)
         self.assertEqual(f.startbit, 77)
         self.assertEqual(f.endbit, 86)
-        self.assertEqual(f.reset, 64)
+        self.assertEqual(f.reset_value, 64)
         self.assertEqual(f.desc, "10-bit write-only field, 6 possible values")
-        # CSRField._signal attributes
+        # Field.signal attributes
         self.assertEqual(f.s.reset, 64)
-        # CSRField._enums attributes
-        self.assertEqual(f.e.MAX, 1023)
-        self.assertEqual(f.e.VERY_HIGH, 256)
-        self.assertEqual(f.e.MODERATELY_HIGH, 64)
-        self.assertEqual(f.e.MODERATELY_LOW, 16)
-        self.assertEqual(f.e.VERY_LOW, 4)
-        self.assertEqual(f.e.MIN, 0)
+        # Field._enums attributes
+        self.assertEqual(f.Enums.MAX.value, 1023)
+        self.assertEqual(f.Enums.VERY_HIGH.value, 256)
+        self.assertEqual(f.Enums.MODERATELY_HIGH.value, 64)
+        self.assertEqual(f.Enums.MODERATELY_LOW.value, 16)
+        self.assertEqual(f.Enums.VERY_LOW.value, 4)
+        self.assertEqual(f.Enums.MIN.value, 0)
 
     # TODO: Define some more unit tests about error raising
     #
 
 
-class CSRRegisterBuilderTestCase(unittest.TestCase):
+class RegisterBuilderTestCase(unittest.TestCase):
     def test_flexible_width(self):
-        csr = CSRRegister("flexible_width", "rw", 
-                          desc="Read-write register with flexible width")
-        with csr as reg:
-            reg.f += [
-                CSRField("r0", access="r"),
-                CSRField("w0", access="w"),
-                CSRField("rw0"),
+        with Register("flexible_width", "rw", 
+                      desc="Read-write register with flexible width") as csr:
+            csr.f += [
+                Field("r0", access="r"),
+                Field("w0", access="w"),
+                Field("rw0")
             ]
-            # reg "flexible_width"
-            self.assertEqual(len(reg), 3)
-            self.assertEqual(reg.name, "flexible_width")
-            self.assertEqual(reg.access, "rw")
-            self.assertEqual(reg.desc, "Read-write register with flexible width")
-            # field "rw0", inherited field access
-            self.assertEqual(reg.f.rw0.access, "rw")
-            # field "r0"
-            self.assertEqual(reg.f.r0.startbit, 0)
-            self.assertEqual(reg.f.r0.width, 1)
-            self.assertEqual(reg.f.r0.endbit, 0)
-            # field "w0"
-            self.assertEqual(reg.f.w0.startbit, 1)
-            self.assertEqual(reg.f.w0.width, 1)
-            self.assertEqual(reg.f.w0.endbit, 1)
-            # field "rw0"
-            self.assertEqual(reg.f.rw0.startbit, 2)
-            self.assertEqual(reg.f.rw0.width, 1)
-            self.assertEqual(reg.f.rw0.endbit, 2)
-            # access bitmask
-            self.assertEqual(reg._get_access_bitmask("r"), 0b101)
-            self.assertEqual(reg._get_access_bitmask("w"), 0b110)
-            self.assertEqual(reg._get_access_bitmask("rw"), 0b100)
-        # CSRElement and CSRField._signal names
-        self.assertEqual(csr._bus.name, "csr_flexible_width")
-        self.assertEqual(csr._reg.f.r0.s.name, "csr_flexible_width__field_r0")
-        self.assertEqual(csr._reg.f.w0.s.name, "csr_flexible_width__field_w0")
-        self.assertEqual(csr._reg.f.rw0.s.name, "csr_flexible_width__field_rw0")
+        # reg "flexible_width"
+        self.assertEqual(len(csr), 3)
+        self.assertEqual(csr.name, "flexible_width")
+        self.assertEqual(csr.access, Element.Access.RW)
+        self.assertEqual(csr.desc, "Read-write register with flexible width")
+        # field "rw0", inherited field access
+        self.assertEqual(csr.f.rw0.access, Element.Access.RW)
+        # field "r0"
+        self.assertEqual(csr.f.r0.startbit, 0)
+        self.assertEqual(csr.f.r0.width, 1)
+        self.assertEqual(csr.f.r0.endbit, 0)
+        # field "w0"
+        self.assertEqual(csr.f.w0.startbit, 1)
+        self.assertEqual(csr.f.w0.width, 1)
+        self.assertEqual(csr.f.w0.endbit, 1)
+        # field "rw0"
+        self.assertEqual(csr.f.rw0.startbit, 2)
+        self.assertEqual(csr.f.rw0.width, 1)
+        self.assertEqual(csr.f.rw0.endbit, 2)
+        # access bitmask
+        self.assertEqual(csr._csr._get_access_bitmask("r"), 0b101)
+        self.assertEqual(csr._csr._get_access_bitmask("w"), 0b110)
+        self.assertEqual(csr._csr._get_access_bitmask("rw"), 0b100)
+        # Element, Field.signal and Field.reset_strobe names
+        self.assertEqual(csr.bus.name, "csr_flexible_width")
+        self.assertEqual(csr.f.r0.s.name, "csr_flexible_width_field_r0")
+        self.assertEqual(csr.f.w0.s.name, "csr_flexible_width_field_w0")
+        self.assertEqual(csr.f.rw0.s.name, "csr_flexible_width_field_rw0")
+        self.assertEqual(csr.f.r0.rst.name, "csr_flexible_width_field_r0_rststb")
+        self.assertEqual(csr.f.w0.rst.name, "csr_flexible_width_field_w0_rststb")
+        self.assertEqual(csr.f.rw0.rst.name, "csr_flexible_width_field_rw0_rststb")
 
     def test_fixed_width(self):
-        csr = CSRRegister("fixed_width", "w", width=20, 
-                          fields=[
-                              CSRField("w0"),
-                              CSRField("w1", width=10, startbit=6),
-                              CSRField("w2", width=2),
-                          ],
-                          desc="Write-only register with fixed width")
+        csr = Register("fixed_width", "w", width=20, 
+                       fields=[
+                           Field("w0"),
+                           Field("w1", width=10, startbit=6),
+                           Field("w2", width=2)
+                       ],
+                       desc="Write-only register with fixed width")
         # reg "flexible_width"
-        self.assertEqual(len(csr._reg), 20)
-        self.assertEqual(csr._reg.name, "fixed_width")
-        self.assertEqual(csr._reg.access, "w")
-        self.assertEqual(csr._reg.desc, "Write-only register with fixed width")
+        self.assertEqual(len(csr), 20)
+        self.assertEqual(csr.name, "fixed_width")
+        self.assertEqual(csr.access, Element.Access.W)
+        self.assertEqual(csr.desc, "Write-only register with fixed width")
         # all fields, inherited field access
-        self.assertEqual(csr._reg.f.w0.access, "w")
-        self.assertEqual(csr._reg.f.w1.access, "w")
-        self.assertEqual(csr._reg.f.w2.access, "w")
+        self.assertEqual(csr.f.w0.access, Element.Access.W)
+        self.assertEqual(csr.f.w1.access, Element.Access.W)
+        self.assertEqual(csr.f.w2.access, Element.Access.W)
         # field "w0"
-        self.assertEqual(csr._reg.f.w0.startbit, 0)
-        self.assertEqual(csr._reg.f.w0.width, 1)
-        self.assertEqual(csr._reg.f.w0.endbit, 0)
+        self.assertEqual(csr.f.w0.startbit, 0)
+        self.assertEqual(csr.f.w0.width, 1)
+        self.assertEqual(csr.f.w0.endbit, 0)
         # field "w1"
-        self.assertEqual(csr._reg.f.w1.startbit, 6)
-        self.assertEqual(csr._reg.f.w1.endbit, 15)
+        self.assertEqual(csr.f.w1.startbit, 6)
+        self.assertEqual(csr.f.w1.endbit, 15)
         # field "w2"
-        self.assertEqual(csr._reg.f.w2.startbit, 16)
-        self.assertEqual(csr._reg.f.w2.endbit, 17)
+        self.assertEqual(csr.f.w2.startbit, 16)
+        self.assertEqual(csr.f.w2.endbit, 17)
         # access bitmask
-        self.assertEqual(csr._reg._get_access_bitmask("r"), 0b000000000000000000)
-        self.assertEqual(csr._reg._get_access_bitmask("w"), 0b111111111111000001)
-        self.assertEqual(csr._reg._get_access_bitmask("rw"), 0b000000000000000000)
-        # CSRElement and CSRField._signal names
-        self.assertEqual(csr._bus.name, "csr_fixed_width")
-        self.assertEqual(csr._reg.f.w0.s.name, "csr_fixed_width__field_w0")
-        self.assertEqual(csr._reg.f.w1.s.name, "csr_fixed_width__field_w1")
-        self.assertEqual(csr._reg.f.w2.s.name, "csr_fixed_width__field_w2")
+        self.assertEqual(csr._csr._get_access_bitmask("r"), 0b000000000000000000)
+        self.assertEqual(csr._csr._get_access_bitmask("w"), 0b111111111111000001)
+        self.assertEqual(csr._csr._get_access_bitmask("rw"), 0b000000000000000000)
+        # Element, Field.signal and Field.reset_strobe names
+        self.assertEqual(csr.bus.name, "csr_fixed_width")
+        self.assertEqual(csr.f.w0.s.name, "csr_fixed_width_field_w0")
+        self.assertEqual(csr.f.w1.s.name, "csr_fixed_width_field_w1")
+        self.assertEqual(csr.f.w2.s.name, "csr_fixed_width_field_w2")
+        self.assertEqual(csr.f.w0.rst.name, "csr_fixed_width_field_w0_rststb")
+        self.assertEqual(csr.f.w1.rst.name, "csr_fixed_width_field_w1_rststb")
+        self.assertEqual(csr.f.w2.rst.name, "csr_fixed_width_field_w2_rststb")
 
     # TODO: Define some more unit tests about error raising
     #
 
 
-class CSRRegisterTestCase(unittest.TestCase):
+class RegisterTestCase(unittest.TestCase):
     def setUp(self):
-        self.dut = CSRRegister("reg_30_rw", "rw", 
-                               desc="Read-write register of 30 bit wide")
-        with self.dut as reg:
-            reg.f += [
-                CSRField("r0", access="r", width=10, reset=0x155),
-                CSRField("w0", access="w", width=10, reset=0x2aa),
-                CSRField("rw0", width=10, reset=0x155),
+        with Register("reg_30_rw", "rw", 
+                      desc="Read-write register of 30 bit wide") as self.dut:
+            self.dut.f += [
+                Field("r0", access="r", width=10, reset_value=0x155),
+                Field("w0", access="w", width=10, reset_value=0x2aa),
+                Field("rw0", width=10, reset_value=0x155)
             ]
-        self.rst = Signal()
-        self.dut = ResetInserter(self.rst)(self.dut)
 
     def test_sim(self):
         def sim_test():
+            # Define delay
+            delay = 1e-6
             # read, before write
-            self.assertEqual((yield self.dut._reg[:]), 0x155aa955)
-            self.assertEqual((yield self.dut._bus.r_data), 0x15500155)
+            yield self.dut.bus.r_stb.eq(1)
+            yield Delay(delay)
+            self.assertEqual((yield self.dut._csr[:]), 0x155aa955)
+            self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
+            yield self.dut.bus.r_stb.eq(0)
             # write once
-            yield self.dut._bus.w_data.eq((0x155<<10) | (0x2aa<<20))
-            yield
-            # read, after write
-            yield
-            self.assertEqual((yield self.dut._reg[:]), 0x2aa55555)
-            self.assertEqual((yield self.dut._bus.r_data), 0x2aa00155)
-            # reset register
-            yield self.rst.eq(1)
-            yield
-            yield self.rst.eq(0)
-            # read, after reset
-            yield
-            self.assertEqual((yield self.dut._reg[:]), 0x155aa955)
-            self.assertEqual((yield self.dut._bus.r_data), 0x15500155)
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.bus.w_data.eq((0x155<<10) | (0x2aa<<20))
+            yield Delay(delay)
+            self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            yield self.dut.bus.w_stb.eq(0)
+            # read again
+            yield self.dut.bus.r_stb.eq(1)
+            yield Delay(delay)
+            self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
+            self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
 
-        _reg_field_sigs = [f._signal for _,f in self.dut._reg._fields.items()]
-        with Simulator(self.dut, vcd_file=open("test.vcd", "w"), 
-                       gtkw_file=open("test.gtkw", "w"), 
-                       traces=[self.dut._bus.r_data,
-                               self.dut._bus.w_data, 
-                               self.rst,
-                               *_reg_field_sigs]) as sim:
+        with Simulator(self.dut, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_process(sim_test())
+            sim.run()
+
+    def test_sim_with_reset(self):
+        def sim_test():
+            # write once
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.bus.w_data.eq((0x155<<10) | (0x2aa<<20))
+            yield
+            self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            yield self.dut.bus.w_stb.eq(0)
+            # read
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
+            self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+
+            # reset and read
+            yield from self.dut.reset(sim=True)
+            yield
+            yield
+            self.assertEqual((yield self.dut._csr[:]), 0x155aa955)
+            self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
+            yield self.dut.bus.r_stb.eq(0)
+            # write again
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.bus.w_data.eq((0x2aa<<10) | (0x2aa<<20))
+            yield
+            self.assertEqual((yield self.dut._csr[:]), 0x2aaaa955)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            yield self.dut.bus.w_stb.eq(0)
+            # read again
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut._csr[:]), 0x2aaaa955)
+            self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+
+        with Simulator(self.dut, vcd_file=open("test_with_reset.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
+            sim.run()
+
+
+class BankBuilderTestCase(unittest.TestCase):
+    def test_basic(self):
+        with Bank(name="basic", desc="A basic peripheral",
+                  addr_width=13, data_width=10) as cbank:
+            cbank.r += Register("basic", "rw", 
+                                desc="A basic read/write register")
+            with cbank.r.basic:
+                cbank.r.basic.f += [
+                    Field("r0", access="r"),
+                    Field("w0", access="w"),
+                    Field("rw0")
+                ]
+        # reg "basic"
+        self.assertEqual(cbank.r.basic.name, "basic")
+        self.assertEqual(cbank.r.basic.access, Element.Access.RW)
+        self.assertEqual(cbank.r.basic.desc, "A basic read/write register")
+        # Multiplexer attributes
+        self.assertEqual(cbank.mux.bus.addr_width, 13)
+        self.assertEqual(cbank.mux.bus.data_width, 10)
+        # Element, Field.signal and Field.reset_strobe names
+        self.assertEqual(cbank._elements["basic"].name, "bank_basic_csr_basic")
+        self.assertEqual(cbank.r.basic.f.r0.s.name, "bank_basic_csr_basic_field_r0")
+        self.assertEqual(cbank.r.basic.f.w0.s.name, "bank_basic_csr_basic_field_w0")
+        self.assertEqual(cbank.r.basic.f.rw0.s.name, "bank_basic_csr_basic_field_rw0")
+        self.assertEqual(cbank.r.basic.f.r0.rst.name, "bank_basic_csr_basic_field_r0_rststb")
+        self.assertEqual(cbank.r.basic.f.w0.rst.name, "bank_basic_csr_basic_field_w0_rststb")
+        self.assertEqual(cbank.r.basic.f.rw0.rst.name, "bank_basic_csr_basic_field_rw0_rststb")
+
+    def test_nameless_bank(self):
+        with Bank(addr_width=6, data_width=14) as cbank:
+            cbank.r += [
+                Register("foo", "r", fields=[Field("r0"),
+                                             Field("r1"),
+                                             Field("r2")]),
+                Register("bar", "w", fields=[Field("w0")])
+            ]
+        # Element and Field.signal names
+        self.assertEqual(cbank._elements["foo"].name, "csr_foo")
+        self.assertEqual(cbank.r.foo.f.r0.s.name, "csr_foo_field_r0")
+        self.assertEqual(cbank.r.foo.f.r1.s.name, "csr_foo_field_r1")
+        self.assertEqual(cbank.r.foo.f.r2.s.name, "csr_foo_field_r2")
+        self.assertEqual(cbank.r.foo.f.r0.rst.name, "csr_foo_field_r0_rststb")
+        self.assertEqual(cbank.r.foo.f.r1.rst.name, "csr_foo_field_r1_rststb")
+        self.assertEqual(cbank.r.foo.f.r2.rst.name, "csr_foo_field_r2_rststb")
+        self.assertEqual(cbank._elements["bar"].name, "csr_bar")
+        self.assertEqual(cbank.r.bar.f.w0.s.name, "csr_bar_field_w0")
+        self.assertEqual(cbank.r.bar.f.w0.rst.name, "csr_bar_field_w0_rststb")
+
+    # TODO: Define some more unit tests about error raising
+    #
+
+
+class BankTestCase(unittest.TestCase):
+    def setUp(self):
+        self.dut = Bank(addr_width=16, data_width=8, alignment=2)
+        with self.dut:
+            self.dut.r += [
+                Register("reg_8_r", "r", width=8, 
+                         fields=[Field("val", width=8, reset_value=0x22)]),
+                Register("reg_16_rw", "rw", width=16, 
+                         fields=[Field("ro", access="r", width=5, reset_value=0x16),
+                                 Field("wo", access="w", width=4, reset_value=0x3),
+                                 Field("rw", width=7, reset_value=0x4c)]),
+                Register("reg_4_w", "w", width=4, 
+                         fields=[Field("val", width=4, reset_value=0x4)],
+                         alignment=4)
+            ]
+        #self.dut_rst = Signal()
+        #self.dut = ResetInserter(self.dut_rst)(self.dut)
+
+    def test_alignment(self):
+        mux = self.dut.mux
+        elements = self.dut._elements
+        self.assertEqual(list(mux._map.resources()), [
+            (elements["reg_8_r"], (0, 4)),
+            (elements["reg_16_rw"], (4, 8)),
+            (elements["reg_4_w"], (16, 20)),
+        ])
+
+    def test_sim(self):
+        def get_reg_bus(name):
+            return self.dut._elements[name]
+        def get_reg_csr_sig(name):
+            return self.dut._bank._get_csr(name)[:]
+        def concat_chunks(addr_value_dict, addr_lo, addr_hi):
+            result = 0
+            for addr in range(addr_lo, addr_hi):
+                result |= addr_value_dict[addr] << ((addr-addr_lo)*self.dut.data_width)
+            return result
+
+        def sim_test():
+            # Dicts for r_data to assert, w_data to test and w_data to assert
+            expected_r_data, actual_w_data, expected_w_data = dict(), dict(), dict()
+
+            # before write, read reg_8_r
+            yield self.dut.mux.bus.r_stb.eq(1)
+            yield self.dut.mux.bus.addr.eq(0)
+            yield                                               # r_data is latched 1 cycle later
+            self.assertEqual((yield get_reg_bus("reg_8_r").r_stb), 1)
+            yield
+            self.assertEqual((yield self.dut.mux.bus.r_data), 0x22)
+            # before write, read reg_16_rw
+            expected_r_data[4] = 0x16                           # [8:5] is write-only
+            expected_r_data[5] = 0x98                           # The rest can be read
+            expected_r_data[6] = 0x00                           # except after addr=5
+            expected_r_data[7] = 0x00
+            for addr in range(4,8):
+                yield self.dut.mux.bus.addr.eq(addr)
+                yield                                           # r_data is latched 1 cycle later
+                self.assertEqual((yield get_reg_bus("reg_16_rw").r_stb), 
+                                 1 if addr == 4 else 0,
+                                 "addr={}".format(addr))        # Only enabled for 1st chunk
+                yield
+                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                                 expected_r_data[addr],
+                                 "addr={}".format(addr))
+            # before write, read reg_4_w [write-only]
+            expected_r_data[16] = 0x00                          # Write-only
+            expected_r_data[17] = 0x00                          # Write-only
+            expected_r_data[18] = 0x00                          # Write-only
+            expected_r_data[19] = 0x00                          # Write-only
+            for addr in range(16,20):
+                yield self.dut.mux.bus.addr.eq(addr)
+                yield                                           # r_data is latched 1 cycle later
+                yield
+                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                                 expected_r_data[addr],
+                                 "addr={}".format(addr))
+            yield self.dut.mux.bus.r_stb.eq(0)
+
+            # write reg_4_w
+            yield self.dut.mux.bus.w_stb.eq(1)
+            actual_w_data[16], expected_w_data[16] = 0xbb, 0x0b # Only chunk 1 can be written
+            actual_w_data[17], expected_w_data[17] = 0xaa, 0x00 # The rest won't be written
+            actual_w_data[18], expected_w_data[18] = 0x99, 0x00
+            actual_w_data[19], expected_w_data[19] = 0x88, 0x00
+            for addr in range(16,20):
+                yield self.dut.mux.bus.addr.eq(addr)
+                yield self.dut.mux.bus.w_data.eq(actual_w_data[addr])
+                yield                                           # w_stb is latched 1 cycle later
+                yield
+                self.assertEqual((yield get_reg_bus("reg_4_w").w_stb), 
+                                 1 if addr == 19 else 0,
+                                 "addr={}".format(addr))        # Only enabled for last chunk
+                                                                # TODO: Eliminate unused chunks?
+            self.assertEqual((yield get_reg_bus("reg_4_w").w_data),
+                             concat_chunks(expected_w_data, 16, 20))
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
+            # write reg_16_rw
+            actual_w_data[4], expected_w_data[4] = 0x33, 0x33   # Chunk w_data ignores bitwise access
+            actual_w_data[5], expected_w_data[5] = 0x44, 0x44   # Chunks 1-2 can be written
+            actual_w_data[6], expected_w_data[6] = 0x55, 0x00   # The rest won't be written
+            actual_w_data[7], expected_w_data[7] = 0x66, 0x00
+            for addr in range(4,8):
+                yield self.dut.mux.bus.addr.eq(addr)
+                yield self.dut.mux.bus.w_data.eq(actual_w_data[addr])
+                yield                                           # w_stb is latched 1 cycle later
+                yield
+                self.assertEqual((yield get_reg_bus("reg_16_rw").w_stb), 
+                                 1 if addr == 7 else 0,
+                                 "addr={}".format(addr))        # Only enabled for last chunk
+            self.assertEqual((yield get_reg_bus("reg_16_rw").w_data),
+                             concat_chunks(expected_w_data, 4, 8))
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x4436)
+            # write reg_8_r [read-only]
+            yield self.dut.mux.bus.addr.eq(0)
+            yield self.dut.mux.bus.w_data.eq(0xFF)
+            yield                                               # w_stb is latched 1 cycle later
+            yield
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
+            yield self.dut.mux.bus.w_stb.eq(0)
+
+            # after write, read reg_16_rw
+            yield self.dut.mux.bus.r_stb.eq(1)
+            expected_r_data[4] = 0x16                           # [8:5] is write-only
+            expected_r_data[5] = 0x44                           # The rest can be read
+            expected_r_data[6] = 0x00                           # except after addr=5
+            expected_r_data[7] = 0x00
+            for addr in range(4,8):
+                yield self.dut.mux.bus.addr.eq(addr)
+                yield
+                self.assertEqual((yield get_reg_bus("reg_16_rw").r_stb), 
+                                 1 if addr == 4 else 0,
+                                 "addr={}".format(addr))        # Only enabled for 1st chunk
+                yield
+                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                                 expected_r_data[addr],
+                                 "addr={}".format(addr))
+
+            # reset register values
+            yield from self.dut.r.reg_8_r.reset(sim=True)
+            yield from self.dut.r.reg_16_rw.reset(sim=True)
+            yield from self.dut.r.reg_4_w.reset(sim=True)
+            yield
+            # after reset, check all csr signals
+            yield
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0x4)
+            # after reset, read reg_16_rw
+            expected_r_data[4] = 0x16                           # [8:5] is write-only
+            expected_r_data[5] = 0x98                           # The rest can be read
+            expected_r_data[6] = 0x00                           # except after addr=5
+            expected_r_data[7] = 0x00
+            for addr in range(4,8):
+                yield self.dut.mux.bus.addr.eq(addr)
+                yield
+                yield
+                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                                 expected_r_data[addr],
+                                 "addr={}".format(addr))
+
+        with Simulator(self.dut, vcd_file=open("test.vcd", "w")) as sim:
             sim.add_clock(1e-6)
             sim.add_sync_process(sim_test())
             sim.run()
