@@ -275,9 +275,9 @@ class RegisterTestCase(unittest.TestCase):
 
 
 class BankBuilderTestCase(unittest.TestCase):
-    def test_basic(self):
+    def test_basic_mux(self):
         with Bank(name="basic", desc="A basic peripheral",
-                  addr_width=13, data_width=10) as cbank:
+                  addr_width=13, data_width=10, type="mux") as cbank:
             cbank.r += Register("basic", "rw", 
                                 desc="A basic read/write register")
             with cbank.r.basic:
@@ -286,6 +286,10 @@ class BankBuilderTestCase(unittest.TestCase):
                     Field("w0", access="w"),
                     Field("rw0")
                 ]
+        # bank "basic"
+        self.assertEqual(cbank.name, "basic")
+        self.assertEqual(cbank.desc, "A basic peripheral")
+        self.assertEqual(cbank.type, "mux")
         # reg "basic"
         self.assertEqual(cbank.r.basic.name, "basic")
         self.assertEqual(cbank.r.basic.access, Element.Access.RW)
@@ -302,14 +306,32 @@ class BankBuilderTestCase(unittest.TestCase):
         self.assertEqual(cbank.r.basic.f.w0.rst.name, "bank_basic_csr_basic_field_w0_rststb")
         self.assertEqual(cbank.r.basic.f.rw0.rst.name, "bank_basic_csr_basic_field_rw0_rststb")
 
-    def test_nameless_bank(self):
+    def test_nameless_bank_dec(self):
         with Bank(addr_width=6, data_width=14) as cbank:
             cbank.r += [
                 Register("foo", "r", fields=[Field("r0"),
                                              Field("r1"),
-                                             Field("r2")]),
-                Register("bar", "w", fields=[Field("w0")])
+                                             Field("r2")]),             # len ==  3
+                Register("bar", "w", fields=[Field("w0", width=42)]),   # len == 42
+                Register("baz", "rw", fields=[Field("rw0", width=13)],
+                         width=15)                                      # len == 15
             ]
+        # bank "basic"
+        self.assertEqual(cbank.name, None)
+        self.assertEqual(cbank.desc, None)
+        self.assertEqual(cbank.type, "dec")
+        # Decoder attributes
+        self.assertEqual(cbank.dec.bus.addr_width, 6)
+        self.assertEqual(cbank.dec.bus.data_width, 14)
+        # mux for "foo"
+        self.assertEqual(cbank._muxes["foo"].bus.addr_width, 1)
+        self.assertEqual(cbank._muxes["foo"].bus.data_width, 14)
+        # mux for "bar"
+        self.assertEqual(cbank._muxes["bar"].bus.addr_width, 3)
+        self.assertEqual(cbank._muxes["bar"].bus.data_width, 14)
+        # mux for "baz"
+        self.assertEqual(cbank._muxes["baz"].bus.addr_width, 2)
+        self.assertEqual(cbank._muxes["baz"].bus.data_width, 14)
         # Element and Field.signal names
         self.assertEqual(cbank._elements["foo"].name, "csr_foo")
         self.assertEqual(cbank.r.foo.f.r0.s.name, "csr_foo_field_r0")
@@ -321,14 +343,28 @@ class BankBuilderTestCase(unittest.TestCase):
         self.assertEqual(cbank._elements["bar"].name, "csr_bar")
         self.assertEqual(cbank.r.bar.f.w0.s.name, "csr_bar_field_w0")
         self.assertEqual(cbank.r.bar.f.w0.rst.name, "csr_bar_field_w0_rststb")
+        self.assertEqual(cbank._elements["baz"].name, "csr_baz")
+        self.assertEqual(cbank.r.baz.f.rw0.s.name, "csr_baz_field_rw0")
+        self.assertEqual(cbank.r.baz.f.rw0.rst.name, "csr_baz_field_rw0_rststb")
 
     # TODO: Define some more unit tests about error raising
     #
 
 
 class BankTestCase(unittest.TestCase):
-    def setUp(self):
-        self.dut = Bank(addr_width=16, data_width=8, alignment=2)
+    def test_mux_sim(self):
+        self.dut = Bank(addr_width=16, data_width=8, alignment=2, type="mux")
+        self.set_up_registers()
+        self.test_mux_alignment()
+        self.simulate(type="mux")
+
+    def test_dec_sim(self):
+        self.dut = Bank(addr_width=16, data_width=8, alignment=2, type="dec")
+        self.set_up_registers()
+        self.test_dec_alignment()
+        self.simulate(type="dec")
+
+    def set_up_registers(self):
         with self.dut:
             self.dut.r += [
                 Register("reg_8_r", "r", width=8, 
@@ -344,17 +380,32 @@ class BankTestCase(unittest.TestCase):
         #self.dut_rst = Signal()
         #self.dut = ResetInserter(self.dut_rst)(self.dut)
 
-    def test_alignment(self):
+    def test_mux_alignment(self):
+        if not hasattr(self, "dut"):
+            return unittest.skip("self.dut has not been instantiated")
         mux = self.dut.mux
         elements = self.dut._elements
         self.assertEqual(list(mux._map.resources()), [
-            (elements["reg_8_r"], (0, 4)),
-            (elements["reg_16_rw"], (4, 8)),
-            (elements["reg_4_w"], (16, 20)),
+            (elements["reg_8_r"], (0, 1)),
+            (elements["reg_16_rw"], (4, 6)),
+            (elements["reg_4_w"], (16, 17)),
         ])
 
-    def test_sim(self):
-        def get_reg_bus(name):
+    def test_dec_alignment(self):
+        if not hasattr(self, "dut"):
+            return unittest.skip("self.dut has not been instantiated")
+        dec = self.dut.dec
+        muxes = self.dut._muxes
+        self.assertEqual(list(dec._map.windows()), [
+            (muxes["reg_8_r"].bus.memory_map, (0, 2, 1)),
+            (muxes["reg_16_rw"].bus.memory_map, (4, 8, 1)),
+            (muxes["reg_4_w"].bus.memory_map, (16, 18, 1)),
+        ])
+        print("\n")
+
+
+    def simulate(self, type):
+        def get_reg_elem(name):
             return self.dut._elements[name]
         def get_reg_csr_sig(name):
             return self.dut._bank._get_csr(name)[:]
@@ -365,29 +416,50 @@ class BankTestCase(unittest.TestCase):
             return result
 
         def sim_test():
+            # Define "bus" for each type of Bank:
+            # - "mux": self.dut.mux.bus
+            # - "dec": self.dut.dec.bus
+            if type == "mux":
+                bus_to_test = self.dut.mux.bus
+            elif type == "dec":
+                bus_to_test = self.dut.dec.bus
+
             # Dicts for r_data to assert, w_data to test and w_data to assert
             expected_r_data, actual_w_data, expected_w_data = dict(), dict(), dict()
 
             # before write, read reg_8_r
-            yield self.dut.mux.bus.r_stb.eq(1)
-            yield self.dut.mux.bus.addr.eq(0)
+            yield bus_to_test.r_stb.eq(1)
+            yield bus_to_test.addr.eq(0)
             yield                                               # r_data is latched 1 cycle later
-            self.assertEqual((yield get_reg_bus("reg_8_r").r_stb), 1)
+            self.assertEqual((yield get_reg_elem("reg_8_r").r_stb), 1)
             yield
-            self.assertEqual((yield self.dut.mux.bus.r_data), 0x22)
+            self.assertEqual((yield bus_to_test.r_data), 0x22)
             # before write, read reg_16_rw
             expected_r_data[4] = 0x16                           # [8:5] is write-only
             expected_r_data[5] = 0x98                           # The rest can be read
             expected_r_data[6] = 0x00                           # except after addr=5
             expected_r_data[7] = 0x00
+            #print("\nreg_16_rw:")
             for addr in range(4,8):
-                yield self.dut.mux.bus.addr.eq(addr)
+                yield bus_to_test.addr.eq(addr)
                 yield                                           # r_data is latched 1 cycle later
-                self.assertEqual((yield get_reg_bus("reg_16_rw").r_stb), 
+                """
+                print("addr={}:".format(addr))
+                print("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)))
+                print("\tdec.bus.r_stb={}, mux.bus.r_stb={}, elem.r_stb={}"
+                      .format((yield self.dut.dec.bus.r_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.r_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.r_stb),
+                              (yield get_reg_elem("reg_16_rw").r_stb)))
+                """
+                self.assertEqual((yield get_reg_elem("reg_16_rw").r_stb), 
                                  1 if addr == 4 else 0,
                                  "addr={}".format(addr))        # Only enabled for 1st chunk
                 yield
-                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
             # before write, read reg_4_w [write-only]
@@ -396,30 +468,42 @@ class BankTestCase(unittest.TestCase):
             expected_r_data[18] = 0x00                          # Write-only
             expected_r_data[19] = 0x00                          # Write-only
             for addr in range(16,20):
-                yield self.dut.mux.bus.addr.eq(addr)
+                yield bus_to_test.addr.eq(addr)
                 yield                                           # r_data is latched 1 cycle later
                 yield
-                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
-            yield self.dut.mux.bus.r_stb.eq(0)
+            yield bus_to_test.r_stb.eq(0)
 
             # write reg_4_w
-            yield self.dut.mux.bus.w_stb.eq(1)
+            yield bus_to_test.w_stb.eq(1)
             actual_w_data[16], expected_w_data[16] = 0xbb, 0x0b # Only chunk 1 can be written
             actual_w_data[17], expected_w_data[17] = 0xaa, 0x00 # The rest won't be written
             actual_w_data[18], expected_w_data[18] = 0x99, 0x00
             actual_w_data[19], expected_w_data[19] = 0x88, 0x00
+            #print("\nreg_4_w:")
             for addr in range(16,20):
-                yield self.dut.mux.bus.addr.eq(addr)
-                yield self.dut.mux.bus.w_data.eq(actual_w_data[addr])
+                yield bus_to_test.addr.eq(addr)
+                yield bus_to_test.w_data.eq(actual_w_data[addr])
                 yield                                           # w_stb is latched 1 cycle later
                 yield
-                self.assertEqual((yield get_reg_bus("reg_4_w").w_stb), 
-                                 1 if addr == 19 else 0,
-                                 "addr={}".format(addr))        # Only enabled for last chunk
-                                                                # TODO: Eliminate unused chunks?
-            self.assertEqual((yield get_reg_bus("reg_4_w").w_data),
+                """
+                print("addr={}:".format(addr))
+                print("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_4_w"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)))
+                print("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
+                      .format((yield self.dut.dec.bus.w_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_4_w"].bus.w_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.w_stb),
+                              (yield get_reg_elem("reg_4_w").w_stb)))
+                """
+                self.assertEqual((yield get_reg_elem("reg_4_w").w_stb), 
+                                 1 if addr == 16 else 0,
+                                 "addr={}".format(addr))        # Only enabled for last actual chunk
+            self.assertEqual((yield get_reg_elem("reg_4_w").w_data),
                              concat_chunks(expected_w_data, 16, 20))
             self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
             # write reg_16_rw
@@ -427,39 +511,52 @@ class BankTestCase(unittest.TestCase):
             actual_w_data[5], expected_w_data[5] = 0x44, 0x44   # Chunks 1-2 can be written
             actual_w_data[6], expected_w_data[6] = 0x55, 0x00   # The rest won't be written
             actual_w_data[7], expected_w_data[7] = 0x66, 0x00
+            #print("\nreg_16_rw:")
             for addr in range(4,8):
-                yield self.dut.mux.bus.addr.eq(addr)
-                yield self.dut.mux.bus.w_data.eq(actual_w_data[addr])
+                yield bus_to_test.addr.eq(addr)
+                yield bus_to_test.w_data.eq(actual_w_data[addr])
                 yield                                           # w_stb is latched 1 cycle later
                 yield
-                self.assertEqual((yield get_reg_bus("reg_16_rw").w_stb), 
-                                 1 if addr == 7 else 0,
-                                 "addr={}".format(addr))        # Only enabled for last chunk
-            self.assertEqual((yield get_reg_bus("reg_16_rw").w_data),
+                """
+                print("addr={}:".format(addr))
+                print("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)))
+                print("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
+                      .format((yield self.dut.dec.bus.w_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.w_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.w_stb),
+                              (yield get_reg_elem("reg_16_rw").w_stb)))
+                """
+                self.assertEqual((yield get_reg_elem("reg_16_rw").w_stb), 
+                                 1 if addr == 5 else 0,
+                                 "addr={}".format(addr))        # Only enabled for last actual chunk
+            self.assertEqual((yield get_reg_elem("reg_16_rw").w_data),
                              concat_chunks(expected_w_data, 4, 8))
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x4436)
             # write reg_8_r [read-only]
-            yield self.dut.mux.bus.addr.eq(0)
-            yield self.dut.mux.bus.w_data.eq(0xFF)
+            yield bus_to_test.addr.eq(0)
+            yield bus_to_test.w_data.eq(0xFF)
             yield                                               # w_stb is latched 1 cycle later
             yield
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
-            yield self.dut.mux.bus.w_stb.eq(0)
+            yield bus_to_test.w_stb.eq(0)
 
             # after write, read reg_16_rw
-            yield self.dut.mux.bus.r_stb.eq(1)
+            yield bus_to_test.r_stb.eq(1)
             expected_r_data[4] = 0x16                           # [8:5] is write-only
             expected_r_data[5] = 0x44                           # The rest can be read
             expected_r_data[6] = 0x00                           # except after addr=5
             expected_r_data[7] = 0x00
             for addr in range(4,8):
-                yield self.dut.mux.bus.addr.eq(addr)
+                yield bus_to_test.addr.eq(addr)
                 yield
-                self.assertEqual((yield get_reg_bus("reg_16_rw").r_stb), 
+                self.assertEqual((yield get_reg_elem("reg_16_rw").r_stb), 
                                  1 if addr == 4 else 0,
                                  "addr={}".format(addr))        # Only enabled for 1st chunk
                 yield
-                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
 
@@ -479,10 +576,10 @@ class BankTestCase(unittest.TestCase):
             expected_r_data[6] = 0x00                           # except after addr=5
             expected_r_data[7] = 0x00
             for addr in range(4,8):
-                yield self.dut.mux.bus.addr.eq(addr)
+                yield bus_to_test.addr.eq(addr)
                 yield
                 yield
-                self.assertEqual((yield self.dut.mux.bus.r_data), 
+                self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
 

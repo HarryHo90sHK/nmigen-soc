@@ -325,7 +325,7 @@ class Decoder(Elaboratable):
     def add(self, sub_bus, *, addr=None):
         """Add a window to a subordinate bus.
 
-        See :meth:`MemoryMap.add_resource` for details.
+        See :meth:`MemoryMap.add_window` for details.
         """
         if not isinstance(sub_bus, Interface):
             raise TypeError("Subordinate bus must be an instance of csr.Interface, not {!r}"

@@ -80,18 +80,46 @@ class _BuilderAttrReaderProxy:
 
 
 class Bank(Elaboratable):
-    """
+    """An elaboratable module to represent a tree of control & status registers. 
+    It can be instantiated as one of the following types:
+
+    * A :class:`csr.bus.Multiplexer` object that multiplexes the multiple chunks
+      of all registers with just a single bus address signal.
+      This type is used with the parameter `type` set to "mux".
+
+    * A :class:`csr.bus.Decoder` object that decodes a bus address to 
+      the base address of one of the registers, which is then used to 
+      multiple the chunks of just this single register.
+      This type is used by default or with the paramter `type` set to "dec".
+
+    Special Notes
+    =============
+
+    Do consider the total width of the registers when determining 
+    the address width of the bank. Note that when initialising the register,
+    the actual width of the register either equals to the `width` parameter value
+    if it is specified, or equals to the total width of its fields if otherwise.
     """
 
-    def __init__(self, addr_width, data_width, *args, alignment=0, **kwargs):
+    def __init__(self, addr_width, data_width, *args, alignment=0, type="dec", **kwargs):
         self._bank = _BankBuilder(*args, **kwargs)
         self._addr_width = addr_width
         self._data_width = data_width
         self._alignment = alignment
-        self.mux = self._mux = Multiplexer(addr_width=addr_width,
-                                           data_width=data_width,
-                                           alignment=alignment)
-        self._build_mux_from_bank()
+        
+        self._type = type
+        if self._type == "mux":
+            self.mux = self._mux = Multiplexer(addr_width=addr_width,
+                                               data_width=data_width)
+            self._build_mux_from_bank()
+        elif self._type == "dec":
+            self.dec = self._dec = Decoder(addr_width=addr_width,
+                                           data_width=data_width)
+            self._build_dec_from_bank()
+        else:
+            raise ValueError("Type must be \"mux\" (for multiplexer) or \"dec\" (for decoder), not {!r}"
+                             .format(name))
+
         self._rename_field_sigs()
         # Context manager: 
         # - If outside a `with` block, self.r returns a reader
@@ -108,6 +136,15 @@ class Bank(Elaboratable):
     @property
     def alignment(self):
         return self._alignment
+    @property
+    def type(self):
+        return self._type
+    @property
+    def name(self):
+        return self._bank._name
+    @property
+    def desc(self):
+        return self._bank._desc
 
     def _build_mux_from_bank(self):
         elem_prefix = (
@@ -129,7 +166,40 @@ class Bank(Elaboratable):
             # Set register alignments and add element to mux
             if csr_alignment is not None:
                 self._mux.align_to(csr_alignment)
+            else:
+                self._mux.align_to(self._alignment)
             self._mux.add(elem)
+
+    def _build_dec_from_bank(self):
+        elem_prefix = (
+            "bank_" + self._bank.name + "_csr_"
+            if self._bank.name is not None
+            else "csr_"
+        )
+        self._muxes = dict()
+        self._elements = dict()
+        for csr_name in self._bank._regs:
+            # Skip if name for this csr already exists in the mux element list
+            if csr_name in self._elements:
+                continue
+            # Otherwise, add the csr
+            csr_obj = self._bank._get_csr(csr_name)
+            csr_alignment = self._bank._get_alignment(csr_name)
+            # Create Multiplexer for each register
+            mux = Multiplexer(addr_width=-(-len(csr_obj)//self._data_width),
+                              data_width=self._data_width)
+            self._muxes[csr_name] = mux
+            # Create Element from each csr and change signal names for debugging
+            elem = Element(len(csr_obj), csr_obj.access, name=elem_prefix+csr_name)
+            self._elements[csr_name] = elem
+            # Add element to the current mux
+            mux.add(elem)
+            # Set mux alignments and add the mux bus to the decoder
+            if csr_alignment is not None:
+                self._dec.align_to(csr_alignment)
+            else:
+                self._dec.align_to(self._alignment)
+            self._dec.add(mux.bus)
 
     def _rename_field_sigs(self):
         """Change names of field signals and their reset signals for debugging
@@ -145,30 +215,32 @@ class Bank(Elaboratable):
                 field.signal.name = elem_prefix + field.signal.name
                 field.reset_strobe.name = elem_prefix + field.reset_strobe.name
 
-    @property
-    def addr_width(self):
-        return self._addr_width
-    @property
-    def data_width(self):
-        return self._data_width
-    @property
-    def alignment(self):
-        return self._alignment
-
     def __enter__(self):
         self.r = self._bank.r
         return self
 
     def __exit__(self, e_type, e_value, e_tb):
         self.r = self.r_reader
-        self._build_mux_from_bank()
+
+        if self._type == "mux":
+            self._build_mux_from_bank()
+        elif self._type == "dec":
+            self._build_dec_from_bank()
+
         self._rename_field_sigs()
 
     def elaborate(self, platform):
         """Elaborate
         """
         m = Module()
-        m.submodules += self._mux
+
+        if self._type == "mux":
+            m.submodules.mux = self._mux
+        elif self._type == "dec":
+            m.submodules.dec = self._dec
+            for _, mux in self._muxes.items():
+                m.submodules += mux
+
         for csr_name, elem in self._elements.items():
             csr_obj = self._bank._get_csr(csr_name)
             # Read logic
@@ -340,7 +412,8 @@ class _RegisterBase:
         return self._csr.access
     @property
     def width(self):
-        return self._csr.width
+        raise SyntaxError("Actual width of {!r} should be queried using `len()` instead"
+                          .format(self._csr))
     @property
     def desc(self):
         return self._csr.desc
@@ -473,7 +546,9 @@ class _RegisterBuilder:
         If the field has already been specified with an access mode, this will be overridden.
     width : int or None
         Width of the register.
+        If specified, the total width of its fields cannot exceed this value.
         If unspecified, register will resize depending on the total width of its fields.
+        Instead of `reg.width`, use `len(reg)` to query the actual width.
     fields : list of Field or None
         Fields in this register.
         New fields can be added to the register using ``csr.f +=``.
@@ -519,7 +594,8 @@ class _RegisterBuilder:
         return self._access
     @property
     def width(self):
-        return self._width
+        raise SyntaxError("Actual width of {!r} should be queried using `len()` instead"
+                          .format(self))
     @property
     def desc(self):
         return self._desc
