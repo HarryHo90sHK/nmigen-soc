@@ -60,7 +60,7 @@ class JTAGtoSPI(Elaboratable):
             #  "ECP5 and ECP5-5G sysCONFIG Usage Guide Technical Note")
             module.submodules += Instance("USRMCLK",
                                           i_USRMCLKI=self._spi_pins.clk,
-                                          i_USRMCLKTS=self._spi_pins.cs)
+                                          i_USRMCLKTS=0)
             # Add a JTAGG module to expose internal JTAG signals to FPGA
             jtag_sel1_capture_or_shift = Signal()
             jtag_rti1 = Signal()
@@ -85,10 +85,10 @@ class JTAGtoSPI(Elaboratable):
             #   it is implied chain 1 is selected until TAP enters TLR state again
             with module.FSM() as fsm:
                 with module.State("IDLE"):
-                    with module.If(jtag_rst_n):
+                    with module.If(~jtag_rst_n):
                         module.next = "TLRST"
                 with module.State("TLRST"):
-                    with module.If(~jtag_rst_n):    # Current state = Run-Test/Idle
+                    with module.If(jtag_rst_n):    # Current state = Run-Test/Idle
                         module.d.sync += self.jtag.sel.eq(jtag_rti1)
                         module.next = "IDLE"
 
@@ -115,10 +115,8 @@ class JTAGtoSPI(Elaboratable):
                 platform.get_tristate(self.miso, self._spi_pins.miso, None, False),
                 platform.get_tristate(self.clk, self._spi_pins.clk, None, False)
             ]
-            # Contrain JTAG TCK to 25MHz
-            # (see Section 3.32 of FPGA-DS-02012-2.1,
-            #  "ECP5 and ECP5-5G Family Data Sheet")
-            platform.add_clock_constraint(self.jtag.tck, 25e6)
+            # Constrain JTAG TCK to 5MHz
+            platform.add_clock_constraint(self.jtag.tck, 5e6)
         # For simulation purpose using no Pins:
         else:
             m.d.comb += [
@@ -157,21 +155,19 @@ class JTAGtoSPI(Elaboratable):
                 with m.If(self.jtag.tdi & self.jtag_sel1_shift):
                     m.next = "HEAD"
             with m.State("HEAD"):
+                m.d.sync += [
+                    bits.eq(Cat(self.jtag.tdi, bits)),
+                    head.eq(head - 1)
+                ]
                 with m.If(head == 0):
                     m.next = "XFER"
             with m.State("XFER"):
+                m.d.sync += bits.eq(bits - 1)
                 with m.If(bits == 0):
                     m.next = "IDLE"
         m.d.sync += [
             self.mosi.o.eq(self.jtag.tdi),
             self.cs_n.o.eq(~fsm.ongoing("XFER"))
         ]
-        with m.If(fsm.ongoing("HEAD")):
-            m.d.sync += [
-                bits.eq(Cat(self.jtag.tdi, bits)),
-                head.eq(head - 1)
-            ]
-        with m.If(fsm.ongoing("XFER")):
-            m.d.sync += bits.eq(bits - 1)
 
         return m
