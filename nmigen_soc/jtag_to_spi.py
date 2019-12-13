@@ -1,4 +1,5 @@
 from nmigen import *
+from nmigen.lib.cdc import FFSynchronizer
 from nmigen.lib.io import Pin
 
 
@@ -34,10 +35,10 @@ class JTAGtoSPI(Elaboratable):
         self._spi_pins = spi_pins
         self.jtag = Record(_wire_layout())
 
-        self.cs_n = Pin(1, "io")        # Note: pins uses ~CS_N
-        self.clk  = Pin(1, "io")
-        self.mosi = Pin(1, "io")
-        self.miso = Pin(1, "io")
+        self.cs_n = Pin(1, "oe")        # Note: pins uses ~CS_N
+        self.clk  = Pin(1, "oe")
+        self.mosi = Pin(1, "oe")
+        self.miso = Signal()
 
         #
         self.cs_n.o.reset = 1
@@ -59,7 +60,7 @@ class JTAGtoSPI(Elaboratable):
             # (see Section 6.1.2 of FPGA-TN-02039-1.7, 
             #  "ECP5 and ECP5-5G sysCONFIG Usage Guide Technical Note")
             module.submodules += Instance("USRMCLK",
-                                          i_USRMCLKI=self._spi_pins.clk,
+                                          i_USRMCLKI=self.clk,
                                           i_USRMCLKTS=0)
             # Add a JTAGG module to expose internal JTAG signals to FPGA
             jtag_sel1_capture_or_shift = Signal()
@@ -86,11 +87,14 @@ class JTAGtoSPI(Elaboratable):
             with module.FSM() as fsm:
                 with module.State("IDLE"):
                     with module.If(~jtag_rst_n):
+                        module.d.sync += self.jtag.sel.eq(0)
                         module.next = "TLRST"
                 with module.State("TLRST"):
-                    with module.If(jtag_rst_n):    # Current state = Run-Test/Idle
+                    with module.If(~self.jtag.sel):
                         module.d.sync += self.jtag.sel.eq(jtag_rti1)
+                    with module.Else():
                         module.next = "IDLE"
+
 
         # Other devices:
         else:
@@ -112,11 +116,12 @@ class JTAGtoSPI(Elaboratable):
             m.submodules += [
                 platform.get_tristate(self.cs_n, self._spi_pins.cs, None, True),    # Note: cs_n is ~pins.cs
                 platform.get_tristate(self.mosi, self._spi_pins.mosi, None, False),
-                platform.get_tristate(self.miso, self._spi_pins.miso, None, False),
-                platform.get_tristate(self.clk, self._spi_pins.clk, None, False)
+                FFSynchronizer(self._spi_pins.miso.i, self.miso)
             ]
-            # Constrain JTAG TCK to 5MHz
-            platform.add_clock_constraint(self.jtag.tck, 5e6)
+            m.d.comb += [
+                self._spi_pins.wp.eq(0),
+                self._spi_pins.hold.eq(0)
+            ]
         # For simulation purpose using no Pins:
         else:
             m.d.comb += [
@@ -130,13 +135,10 @@ class JTAGtoSPI(Elaboratable):
             self.cs_n.oe.eq(self.jtag.sel),
             self.clk.oe.eq(self.jtag.sel),
             self.mosi.oe.eq(self.jtag.sel),
-            self.miso.oe.eq(0),
-            # Do not suppress CLK toggles outside CS_N asserted.
-            # Xilinx USRCCLK0 requires three dummy cycles to do anything
-            # https://www.xilinx.com/support/answers/52626.html
-            # This is fine since CS_N changes only on falling CLK.
+            self.jtag.tdo.eq(self.miso),
+            # Positive edge: JTAG TAP outputs; SPI device gets input from FPGA
+            # Negative edge: JTAG TAP gets input; SPI device outputs to FPGA
             self.clk.o.eq(~self.jtag.tck),
-            self.jtag.tdo.eq(self.miso.i),
         ]
 
         # Latency calculation (in half cycles):
@@ -150,24 +152,24 @@ class JTAGtoSPI(Elaboratable):
         #   JTAG2SPI (BSCAN primitive): sample MISO -> set TDO
         # 3 (rising TCK, falling CLK):
         #   JTAG adapter: sample TDO
-        with m.FSM() as fsm:
+        with m.FSM(domain="sys") as fsm:
             with m.State("IDLE"):
-                with m.If(self.jtag.tdi & self.jtag_sel1_shift):
+                with m.If(self.jtag_sel1_shift & self.jtag.tdi):
                     m.next = "HEAD"
             with m.State("HEAD"):
-                m.d.sync += [
+                m.d.sys += [
                     bits.eq(Cat(self.jtag.tdi, bits)),
                     head.eq(head - 1)
                 ]
                 with m.If(head == 0):
                     m.next = "XFER"
             with m.State("XFER"):
-                m.d.sync += bits.eq(bits - 1)
+                m.d.sys += bits.eq(bits - 1)
                 with m.If(bits == 0):
                     m.next = "IDLE"
-        m.d.sync += [
+        m.d.comb += [
             self.mosi.o.eq(self.jtag.tdi),
-            self.cs_n.o.eq(~fsm.ongoing("XFER"))
+            self.cs_n.o.eq(fsm.ongoing("XFER"))
         ]
 
         return m
