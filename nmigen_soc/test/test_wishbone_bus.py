@@ -5,7 +5,7 @@ from nmigen import *
 from nmigen.hdl.rec import *
 from nmigen.back.pysim import *
 
-from ..wishbone.bus import *
+from ..wishbone import *
 
 
 class InterfaceTestCase(unittest.TestCase):
@@ -295,4 +295,87 @@ class DecoderSimulationTestCase(unittest.TestCase):
         m.submodules += dut, loop_1, loop_2, loop_3, loop_4
         with Simulator(m, vcd_file=open("test.vcd", "w")) as sim:
             sim.add_process(sim_test())
+            sim.run()
+
+
+class InterconnectSharedSimulationTestCase(unittest.TestCase):
+    def setUp(self):
+        self.shared = Interface(addr_width=30,
+                                data_width=32,
+                                granularity=8,
+                                features={"err","cti","bte"},
+                                name="shared")
+        self.master01 = Interface(addr_width=30,
+                                  data_width=32,
+                                  granularity=8,
+                                  features={"err","cti","bte"},
+                                  name="master01")
+        self.master02 = Record([
+            ("adr",   30, DIR_FANOUT),
+            ("dat_w", 32, DIR_FANOUT),
+            ("dat_r", 32, DIR_FANIN),
+            ("sel",    4, DIR_FANOUT),
+            ("cyc",    1, DIR_FANOUT),
+            ("stb",    1, DIR_FANOUT),
+            ("ack",    1, DIR_FANIN),
+            ("we",     1, DIR_FANOUT),
+            ("cti",    3, DIR_FANOUT),
+            ("bte",    2, DIR_FANOUT),
+            ("err",    1, DIR_FANIN)
+        ])
+        self.ram = SRAM(Memory(width=32, depth=2048, init=[]),
+                        granularity=8, features={"err","cti","bte"})
+        self.sub01 = Interface(addr_width=21,
+                               data_width=32,
+                               granularity=8,
+                               features={"err","cti","bte"},
+                               name="sub01")
+        self.dut = InterconnectShared(
+            shared_bus=self.shared,
+            masters=[
+                self.master01,
+                self.master02
+            ],
+            targets=[
+                (self.ram.bus, 0), 
+                (self.sub01, (2**21) << 2)
+            ]
+        )
+
+    def test_basic(self):
+        def sim_test():
+            yield self.master01.adr.eq(0)
+            yield self.master02.adr.eq(2**21)
+            yield self.master01.we.eq(0)
+            yield self.master02.we.eq(0)
+            #
+            for _ in range(5):
+                yield self.master01.cyc.eq(1)
+                yield self.master02.cyc.eq(1)
+                yield 
+                ram_cyc = (yield self.ram.bus.cyc)
+                sub01_cyc = (yield self.sub01.cyc)
+                if ram_cyc == 1:
+                    yield self.master01.stb.eq(1)
+                    yield
+                    yield self.ram.bus.ack.eq(1)
+                    yield self.master01.stb.eq(0)
+                    yield
+                    yield self.ram.bus.ack.eq(0)
+                    yield self.master01.cyc.eq(0)
+                elif sub01_cyc == 1:
+                    yield self.master02.stb.eq(1)
+                    yield
+                    yield self.sub01.ack.eq(1)
+                    yield self.master02.stb.eq(0)
+                    yield
+                    yield self.sub01.ack.eq(0)
+                    yield self.master02.cyc.eq(0)
+                yield
+
+        m = Module()
+        m.submodules += self.dut, self.ram
+        with Simulator(m, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
             sim.run()
