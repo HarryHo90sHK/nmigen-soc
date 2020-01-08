@@ -154,22 +154,22 @@ class Bank(Elaboratable):
             else "csr_"
         )
         self._elements = dict()
-        for csr_name in self._bank._regs:
+        for csr_name, reg in self._bank._regs.items():
             # Skip if name for this csr already exists in the mux element list
             if csr_name in self._elements:
                 continue
             # Otherwise, add the csr
             csr_obj = self._bank._get_csr(csr_name)
             csr_alignment = self._bank._get_alignment(csr_name)
-            # Create Element from each csr and change signal names for debugging
-            elem = Element(len(csr_obj), csr_obj.access, name=elem_prefix+csr_name)
-            self._elements[csr_name] = elem
+            # Add Element of each csr and change signal names for debugging
+            reg.bus.name = elem_prefix + csr_name
+            self._elements[csr_name] = reg.bus
             # Set register alignments and add element to mux
             if csr_alignment is not None:
                 self._mux.align_to(csr_alignment)
             else:
                 self._mux.align_to(self._alignment)
-            self._mux.add(elem)
+            self._mux.add(reg.bus)
 
     def _build_dec_from_bank(self):
         elem_prefix = (
@@ -179,7 +179,7 @@ class Bank(Elaboratable):
         )
         self._muxes = dict()
         self._elements = dict()
-        for csr_name in self._bank._regs:
+        for csr_name, reg in self._bank._regs.items():
             # Skip if name for this csr already exists in the mux element list
             if csr_name in self._elements:
                 continue
@@ -191,11 +191,11 @@ class Bank(Elaboratable):
                                                          need_pow2=False)),
                               data_width=self._data_width)
             self._muxes[csr_name] = mux
-            # Create Element from each csr and change signal names for debugging
-            elem = Element(len(csr_obj), csr_obj.access, name=elem_prefix+csr_name)
-            self._elements[csr_name] = elem
+            # Add Element of each csr and change signal names for debugging
+            reg.bus.name = elem_prefix + csr_name
+            self._elements[csr_name] = reg.bus
             # Add element to the current mux
-            mux.add(elem)
+            mux.add(reg.bus)
             # Set mux alignments and add the mux bus to the decoder
             if csr_alignment is not None:
                 self._dec.align_to(csr_alignment)
@@ -247,22 +247,21 @@ class Bank(Elaboratable):
             csr_obj = self._bank._get_csr(csr_name)
             # Read logic
             if elem.access.readable():
-                if elem.access.writable():
-                    criteria = ~elem.w_stb & elem.r_stb
-                else:
-                    criteria = elem.r_stb
-                with m.If(criteria):
+                with m.If(elem.r_stb):
                     m.d.comb += _get_rw_bitmasked_logic("r", elem, csr_obj)
                 with m.Else():
                     m.d.comb += elem.r_data.eq(0)
             # Write logic
             if elem.access.writable():
+                reset_val = 0
+                for _, field in csr_obj._fields.items():
+                    reset_val |= (field._reset_value << field._startbit)
+                csr_sig = Signal(len(csr_obj), reset=reset_val)
+                m.d.sync += csr_sig.eq(csr_obj[:])
                 with m.If(elem.w_stb):
                     m.d.comb += _get_rw_bitmasked_logic("w", elem, csr_obj)
-                with m.Elif(ResetSignal()):
-                    m.d.comb += csr_obj[:].eq(0)
                 with m.Else():
-                    m.d.comb += csr_obj[:].eq(csr_obj[:])
+                    m.d.comb += csr_obj[:].eq(csr_sig)
             # Reset logic
             for _, field in csr_obj._fields.items():
                 reset_now = Signal(reset=0, name=field.signal.name+"_rstnow")
@@ -420,6 +419,12 @@ class _RegisterBase:
     def desc(self):
         return self._csr.desc
 
+    def _build_bus_from_reg(self):
+        width = len(self._csr)
+        access = self._csr.access
+        self.bus = self._bus = Element(width, access,
+                                       name="csr_"+self._csr.name)
+
     def _rename_field_sigs(self):
         """Change names of field signals and their reset signals for debugging
         """
@@ -471,30 +476,25 @@ class _RegisterStandalone(_RegisterBase, Elaboratable):
         self._rename_field_sigs()
         self._build_bus_from_reg()
 
-    def _build_bus_from_reg(self):
-        width = len(self._csr)
-        access = self._csr.access
-        self.bus = self._bus = Element(width, access,
-                                       name="csr_"+self._csr.name)
-
     def elaborate(self, platform):
         m = Module()
         # Read logic
         if self._csr.access.readable():
-            if self._csr.access.writable():
-                criteria = ~self._bus.w_stb & self._bus.r_stb
-            else:
-                criteria = self._bus.r_stb
-            with m.If(criteria):
+            with m.If(self._bus.r_stb):
                 m.d.comb += _get_rw_bitmasked_logic("r", self._bus, self._csr)
             with m.Else():
                 m.d.comb += self._bus.r_data.eq(0)
         # Write logic
         if self._csr.access.writable():
+            reset_val = 0
+            for _, field in self._csr._fields.items():
+                reset_val |= (field._reset_value << field._startbit)
+            csr_sig = Signal(len(self._csr), reset=reset_val)
+            m.d.sync += csr_sig.eq(self._csr[:])
             with m.If(self._bus.w_stb):
                 m.d.comb += _get_rw_bitmasked_logic("w", self._bus, self._csr)
             with m.Else():
-                m.d.comb += self._csr[:].eq(self._csr[:])
+                m.d.comb += self._csr[:].eq(csr_sig)
         # Reset logic
         for _, field in self._csr._fields.items():
             reset_now = Signal(reset=0, name=field.signal.name+"_rstnow")
@@ -513,6 +513,7 @@ class _RegisterInBank(_RegisterBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._rename_field_sigs()
+        self._build_bus_from_reg()
 
     def __enter__(self):
         self.f = self._csr.f
@@ -521,6 +522,7 @@ class _RegisterInBank(_RegisterBase):
     def __exit__(self, e_type, e_value, e_tb):
         self.f = self.f_reader
         self._rename_field_sigs()
+        self._build_bus_from_reg()
 
 
 class _RegisterBuilderFields(_BuilderProxy):

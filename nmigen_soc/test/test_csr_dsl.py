@@ -227,29 +227,28 @@ class RegisterTestCase(unittest.TestCase):
 
     def test_sim(self):
         def sim_test():
-            # Define delay
-            delay = 1e-6
             # read, before write
             yield self.dut.bus.r_stb.eq(1)
-            yield Delay(delay)
+            yield 
             self.assertEqual((yield self.dut._csr[:]), 0x155aa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
             yield self.dut.bus.r_stb.eq(0)
             # write once
             yield self.dut.bus.w_stb.eq(1)
             yield self.dut.bus.w_data.eq((0x155<<10) | (0x2aa<<20))
-            yield Delay(delay)
+            yield 
             self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
             yield self.dut.bus.w_stb.eq(0)
             # read again
             yield self.dut.bus.r_stb.eq(1)
-            yield Delay(delay)
+            yield 
             self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
 
         with Simulator(self.dut, vcd_file=open("test.vcd", "w")) as sim:
-            sim.add_process(sim_test())
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
             sim.run()
 
     def test_sim_with_reset(self):
