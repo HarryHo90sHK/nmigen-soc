@@ -25,7 +25,7 @@ class SRAM(Elaboratable):
         if not read_only:
             self._memdepth += self.memory.depth
         if bus is None:
-            bus = Interface(addr_width=bits_for(self._memdepth),
+            bus = Interface(addr_width=max(0, log2_int(self._memdepth, need_pow2=False)),
                             data_width=self.memory.width,
                             granularity=granularity,
                             features=features,
