@@ -61,6 +61,9 @@ class FieldTestCase(unittest.TestCase):
         self.assertEqual(f.desc, "1-bit read-only field")
         # Field.signal attributes
         self.assertEqual(f.s.reset, 0)
+        # Field slicing (check repr only)
+        self.assertEqual(repr(f[:]), repr(f.s[:]))
+        self.assertEqual(repr(f[0]), repr(f.s[0]))
 
     def test_8_rw(self):
         f = Field("f_8_rw", access="rw", 
@@ -80,6 +83,10 @@ class FieldTestCase(unittest.TestCase):
         # Field._enums attributes
         self.assertEqual(f.Enums.ON.value, 255)
         self.assertEqual(f.Enums.OFF.value, 0)
+        # Field slicing (check repr only)
+        self.assertEqual(repr(f[:]), repr(f.s[:]))
+        self.assertEqual(repr(f[-1]), repr(f.s[7]))
+        self.assertEqual(repr(f[1:4]), repr(f.s[1:4]))
 
     def test_10_wo(self):
         f = Field("f_10_wo", access="w", 
@@ -106,6 +113,10 @@ class FieldTestCase(unittest.TestCase):
         self.assertEqual(f.Enums.MODERATELY_LOW.value, 16)
         self.assertEqual(f.Enums.VERY_LOW.value, 4)
         self.assertEqual(f.Enums.MIN.value, 0)
+        # Field slicing (check repr only)
+        self.assertEqual(repr(f[:]), repr(f.s[:]))
+        self.assertEqual(repr(f[9]), repr(f.s[-1]))
+        self.assertEqual(repr(f[3:6]), repr(f.s[3:6]))
 
     # TODO: Define some more unit tests about error raising
     #
@@ -151,6 +162,10 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr.f.r0.rst.name, "csr_flexible_width_field_r0_rststb")
         self.assertEqual(csr.f.w0.rst.name, "csr_flexible_width_field_w0_rststb")
         self.assertEqual(csr.f.rw0.rst.name, "csr_flexible_width_field_rw0_rststb")
+        # Register slicing (check repr only)
+        self.assertEqual(repr(csr[:]), repr(csr._csr[:]))
+        self.assertEqual(repr(csr[0]), repr(csr._csr[-3]))
+        self.assertEqual(repr(csr[1:3]), repr(csr._csr[1:3]))
 
     def test_fixed_width(self):
         csr = Register("fixed_width", "w", width=20, 
@@ -191,6 +206,10 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr.f.w0.rst.name, "csr_fixed_width_field_w0_rststb")
         self.assertEqual(csr.f.w1.rst.name, "csr_fixed_width_field_w1_rststb")
         self.assertEqual(csr.f.w2.rst.name, "csr_fixed_width_field_w2_rststb")
+        # Register slicing (check repr only)
+        self.assertEqual(repr(csr[:]), repr(csr._csr[:]))
+        self.assertEqual(repr(csr[6]), repr(csr._csr[-14]))
+        self.assertEqual(repr(csr[5:18]), repr(csr._csr[5:18]))
 
     # TODO: Define some more unit tests about error raising
     #
@@ -305,6 +324,10 @@ class BankBuilderTestCase(unittest.TestCase):
         self.assertEqual(cbank.r.basic.f.r0.rst.name, "bank_basic_csr_basic_field_r0_rststb")
         self.assertEqual(cbank.r.basic.f.w0.rst.name, "bank_basic_csr_basic_field_w0_rststb")
         self.assertEqual(cbank.r.basic.f.rw0.rst.name, "bank_basic_csr_basic_field_rw0_rststb")
+        # Register slicing (check repr only)
+        self.assertEqual(repr(cbank.r.basic[:]), repr(cbank._bank._regs["basic"]._csr[:]))
+        self.assertEqual(repr(cbank.r.basic[2]), repr(cbank._bank._regs["basic"]._csr[-1]))
+        self.assertEqual(repr(cbank.r.basic[0:2]), repr(cbank._bank._regs["basic"]._csr[0:2]))
 
     def test_nameless_bank_dec(self):
         with Bank(addr_width=6, data_width=14) as cbank:
@@ -346,6 +369,10 @@ class BankBuilderTestCase(unittest.TestCase):
         self.assertEqual(cbank._elements["baz"].name, "csr_baz")
         self.assertEqual(cbank.r.baz.f.rw0.s.name, "csr_baz_field_rw0")
         self.assertEqual(cbank.r.baz.f.rw0.rst.name, "csr_baz_field_rw0_rststb")
+        # Register slicing (check repr only)
+        self.assertEqual(repr(cbank.r.foo[:]), repr(cbank._bank._regs["foo"]._csr[:]))
+        self.assertEqual(repr(cbank.r.bar[10:20]), repr(cbank._bank._regs["bar"]._csr[10:20]))
+        self.assertEqual(repr(cbank.r.baz[5:12]), repr(cbank._bank._regs["baz"]._csr[5:12]))
 
     # TODO: Define some more unit tests about error raising
     #

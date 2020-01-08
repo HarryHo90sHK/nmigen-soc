@@ -425,6 +425,11 @@ class _RegisterBase:
             field.signal.name = "csr_" + self._csr.name + "_field_" + field.name
             field.reset_strobe.name = "csr_" + self._csr.name + "_field_" + field.name + "_rststb"
 
+    def __getitem__(self, key):
+        """Slicing from the field list in units of bit
+        """
+        return self._csr.__getitem__(key)
+
     def __len__(self):
         """Get the width of the register (using ``len(<Register-object>)``).
         If register has not been specified with a width,
@@ -668,6 +673,7 @@ class _RegisterBuilder:
         n = self._bitcount if self._width is None else self._width
         if start < 0:
             start += n
+            end += n
         if end < 0:
             end += n
         if start < 0 or end > n:
@@ -796,7 +802,8 @@ class Field:
         # A field Signal representation
         self._signal = Signal(shape=self._width,
                               reset=self._reset_value,
-                              reset_less=True)
+                              reset_less=True,
+                              name=self._name+"_signal")
         self.sig = self.s = self.signal
         # A reset signal for the field signal
         self._reset_strobe = Signal(reset=0)
@@ -846,7 +853,7 @@ class Field:
             self.Enums = Enum('Enums', self._field._enums)
             # (Re-)build the decoder for the signal
             self._signal = Signal(shape=self._width, reset=self._reset_value, reset_less=True,
-                                  decoder=self.Enums)
+                                  decoder=self.Enums, name=self._name+"_signal")
 
     def __enter__(self):
         self.e = self._field.e
