@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from nmigen import *
 from nmigen.hdl.ast import Assign
+from nmigen.utils import *
 from .bus import *
 
 
@@ -186,7 +187,8 @@ class Bank(Elaboratable):
             csr_obj = self._bank._get_csr(csr_name)
             csr_alignment = self._bank._get_alignment(csr_name)
             # Create Multiplexer for each register
-            mux = Multiplexer(addr_width=-(-len(csr_obj)//self._data_width),
+            mux = Multiplexer(addr_width=max(1, log2_int(-(-len(csr_obj)//self._data_width),
+                                                         need_pow2=False)),
                               data_width=self._data_width)
             self._muxes[csr_name] = mux
             # Create Element from each csr and change signal names for debugging

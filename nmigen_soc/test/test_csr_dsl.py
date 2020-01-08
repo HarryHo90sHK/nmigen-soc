@@ -350,10 +350,10 @@ class BankBuilderTestCase(unittest.TestCase):
         self.assertEqual(cbank._muxes["foo"].bus.addr_width, 1)
         self.assertEqual(cbank._muxes["foo"].bus.data_width, 14)
         # mux for "bar"
-        self.assertEqual(cbank._muxes["bar"].bus.addr_width, 3)
+        self.assertEqual(cbank._muxes["bar"].bus.addr_width, 2)
         self.assertEqual(cbank._muxes["bar"].bus.data_width, 14)
         # mux for "baz"
-        self.assertEqual(cbank._muxes["baz"].bus.addr_width, 2)
+        self.assertEqual(cbank._muxes["baz"].bus.addr_width, 1)
         self.assertEqual(cbank._muxes["baz"].bus.data_width, 14)
         # Element and Field.signal names
         self.assertEqual(cbank._elements["foo"].name, "csr_foo")
@@ -382,13 +382,13 @@ class BankTestCase(unittest.TestCase):
     def test_mux_sim(self):
         self.dut = Bank(addr_width=16, data_width=8, alignment=2, type="mux")
         self.set_up_registers()
-        self.test_mux_alignment()
+        self.check_mux_alignment()
         self.simulate(type="mux")
 
     def test_dec_sim(self):
         self.dut = Bank(addr_width=16, data_width=8, alignment=2, type="dec")
         self.set_up_registers()
-        self.test_dec_alignment()
+        self.check_dec_alignment()
         self.simulate(type="dec")
 
     def set_up_registers(self):
@@ -407,7 +407,7 @@ class BankTestCase(unittest.TestCase):
         #self.dut_rst = Signal()
         #self.dut = ResetInserter(self.dut_rst)(self.dut)
 
-    def test_mux_alignment(self):
+    def check_mux_alignment(self):
         if not hasattr(self, "dut"):
             return unittest.skip("self.dut has not been instantiated")
         mux = self.dut.mux
@@ -418,18 +418,16 @@ class BankTestCase(unittest.TestCase):
             (elements["reg_4_w"], (16, 17)),
         ])
 
-    def test_dec_alignment(self):
+    def check_dec_alignment(self):
         if not hasattr(self, "dut"):
             return unittest.skip("self.dut has not been instantiated")
         dec = self.dut.dec
         muxes = self.dut._muxes
         self.assertEqual(list(dec._map.windows()), [
             (muxes["reg_8_r"].bus.memory_map, (0, 2, 1)),
-            (muxes["reg_16_rw"].bus.memory_map, (4, 8, 1)),
+            (muxes["reg_16_rw"].bus.memory_map, (4, 6, 1)),
             (muxes["reg_4_w"].bus.memory_map, (16, 18, 1)),
         ])
-        print("\n")
-
 
     def simulate(self, type):
         def get_reg_elem(name):
