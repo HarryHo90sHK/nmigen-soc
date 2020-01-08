@@ -4,9 +4,11 @@ from nmigen.hdl.rec import Direction
 from nmigen.utils import log2_int
 
 from ..memory import MemoryMap
+from ..scheduler import *
 
 
-__all__ = ["CycleType", "BurstTypeExt", "Interface", "Decoder"]
+__all__ = ["CycleType", "BurstTypeExt", "Interface", "Decoder",
+           "Arbiter", "InterconnectShared"]
 
 
 class CycleType(Enum):
@@ -107,12 +109,13 @@ class Interface(Record):
         self.data_width  = data_width
         self.granularity = granularity
         granularity_bits = log2_int(data_width // granularity)
+        self._alignment = alignment
         self.memory_map  = MemoryMap(addr_width=max(1, addr_width + granularity_bits),
                                      data_width=data_width >> granularity_bits,
                                      alignment=alignment)
 
-        features = set(features)
-        unknown  = features - {"rty", "err", "stall", "lock", "cti", "bte"}
+        self._features = set(features)
+        unknown  = self._features - {"rty", "err", "stall", "lock", "cti", "bte"}
         if unknown:
             raise ValueError("Optional signal(s) {} are not supported"
                              .format(", ".join(map(repr, unknown))))
@@ -140,6 +143,36 @@ class Interface(Record):
             layout += [("bte", BurstTypeExt, Direction.FANOUT)]
         super().__init__(layout, name=name, src_loc_at=1)
 
+    @classmethod
+    def from_pure_record(cls, record):
+        """Instantiate a :class:`wishbone.Interface` from a simple :class:`Record`
+        """
+        if not isinstance(record, Record):
+            raise TypeError("{!r} is not a Record"
+                            .format(record))
+        addr_width = len(record.adr)
+        if len(record.dat_w) != len(record.dat_r):
+            raise AttributeError("Record {!r} has {}-bit long \"dat_w\" "
+                                 "but {}-bit long \"dat_r\""
+                                 .format(record, len(record.dat_w), len(record.dat_r)))
+        data_width = len(record.dat_w)
+        if data_width%len(record.sel) != 0:
+            raise AttributeError("Record {!r} has invalid granularity value because "
+                                 "its data width is {}-bit long but "
+                                 "its \"sel\" is {}-bit long"
+                                 .format(record, data_width, len(record.sel)))
+        granularity = data_width // len(record.sel)
+        features = []
+        for signal_name in ["rty", "err", "stall", "lock", "cti", "bte"]:
+            if hasattr(record, signal_name):
+                features.append(signal_name)
+        return cls(addr_width=addr_width,
+                   data_width=data_width,
+                   granularity=granularity,
+                   features=features,
+                   alignment=0,
+                   name=record.name+"_intf")
+
 
 class Decoder(Elaboratable):
     """Wishbone bus decoder.
@@ -162,7 +195,7 @@ class Decoder(Elaboratable):
     Attributes
     ----------
     bus : :class:`Interface`
-        CSR bus providing access to subordinate buses.
+        Bus providing access to subordinate buses.
     """
     def __init__(self, *, addr_width, data_width, granularity=None, features=frozenset(),
                  alignment=0):
@@ -249,13 +282,14 @@ class Decoder(Elaboratable):
                         sub_bus.cyc.eq(self.bus.cyc),
                         self.bus.dat_r.eq(sub_bus.dat_r),
                     ]
-                    ack_fanin |= sub_bus.ack
-                    if hasattr(sub_bus, "err"):
-                        err_fanin |= sub_bus.err
-                    if hasattr(sub_bus, "rty"):
-                        rty_fanin |= sub_bus.rty
-                    if hasattr(sub_bus, "stall"):
-                        stall_fanin |= sub_bus.stall
+
+                ack_fanin |= sub_bus.ack
+                if hasattr(sub_bus, "err"):
+                    err_fanin |= sub_bus.err
+                if hasattr(sub_bus, "rty"):
+                    rty_fanin |= sub_bus.rty
+                if hasattr(sub_bus, "stall"):
+                    stall_fanin |= sub_bus.stall
 
         m.d.comb += self.bus.ack.eq(ack_fanin)
         if hasattr(self.bus, "err"):
@@ -264,5 +298,167 @@ class Decoder(Elaboratable):
             m.d.comb += self.bus.rty.eq(rty_fanin)
         if hasattr(self.bus, "stall"):
             m.d.comb += self.bus.stall.eq(stall_fanin)
+
+        return m
+
+
+class Arbiter(Elaboratable):
+    """Wishbone bus arbiter.
+
+    An arbiter for selecting the Wishbone master from several devices.
+
+    Parameters
+    ----------
+    addr_width : int
+        Address width. See :class:`Interface`.
+    data_width : int
+        Data width. See :class:`Interface`.
+    granularity : int
+        Granularity. See :class:`Interface`.
+    features : iter(str)
+        Optional signal set. See :class:`Interface`.
+    alignment : int
+        Window alignment. See :class:`Interface`.
+
+    Attributes
+    ----------
+    bus : :class:`Interface`
+        Bus providing access to the selected master.
+    """
+    def __init__(self, *, addr_width, data_width, granularity=None, features=frozenset(),
+                 alignment=0, scheduler="rr"):
+        self.bus   = Interface(addr_width=addr_width, data_width=data_width,
+                               granularity=granularity, features=features,
+                               alignment=alignment)
+        self._masters = dict()
+        if scheduler not in ["rr"]:
+            raise ValueError("Scheduling mode must be \"rr\", not {!r}"
+                             .format(scheduler))
+        self._scheduler = scheduler
+        self._next_index = 0
+
+    def add(self, master_bus):
+        """Add a device bus to the list of master candidates
+        """
+        if not isinstance(master_bus, Interface):
+            raise TypeError("Master bus must be an instance of wishbone.Interface, not {!r}"
+                            .format(master_bus))
+        if master_bus.granularity != self.bus.granularity:
+            raise ValueError("Master bus has granularity {}, which is not the same as "
+                             "arbiter granularity {}"
+                             .format(master_bus.granularity, self.bus.granularity))
+        if master_bus.data_width != self.bus.data_width:
+                raise ValueError("Master bus has data width {}, which is not the same as "
+                                 "arbiter data width {})"
+                                 .format(master_bus.data_width, self.bus.data_width))
+        for opt_output in {"err", "rty", "stall"}:
+            if hasattr(master_bus, opt_output) and not hasattr(self.bus, opt_output):
+                raise ValueError("Master bus has optional output {!r}, but the arbiter "
+                                 "does not have a corresponding input"
+                                 .format(opt_output))
+
+        self._masters[master_bus.memory_map] = self._next_index, master_bus
+        self._next_index += 1
+
+    def elaborate(self, platform):
+        m = Module()
+
+        if self._scheduler == "rr":
+            m.submodules.scheduler = scheduler = RoundRobin(self._next_index)
+        grant = Signal(self._next_index)
+        m.d.comb += grant.eq(scheduler.grant)
+
+        for signal_name, (_, signal_direction) in self.bus.layout.fields.items():
+            # FANOUT signals: only mux the granted master with the interface
+            if signal_direction == Direction.FANOUT:
+                master_signals = Array(getattr(master_bus, signal_name) 
+                                       for __, (___, master_bus) 
+                                       in self._masters.items())
+                m.d.comb += getattr(self.bus, signal_name).eq(master_signals[grant])
+            # FANIN signals: ACK and ERR are ORed to all masters;
+            #                all other signals are asserted to the granted master only
+            if signal_direction == Direction.FANIN:
+                for __, (index, master_bus) in self._masters.items():
+                    source = getattr(self.bus, signal_name)
+                    dest = getattr(master_bus, signal_name)
+                    if signal_name in ["ack", "err"]:
+                        m.d.comb += dest.eq(source & (grant == index))
+                    else:
+                        m.d.comb += dest.eq(source)
+
+        master_requests = [master_bus.cyc & ~master_bus.ack
+                           for __, (___, master_bus) in self._masters.items()]
+        m.d.comb += scheduler.request.eq(Cat(*master_requests))
+
+        return m
+
+
+class InterconnectShared(Elaboratable):
+    """
+    """
+    def __init__(self, shared_bus, masters, targets):
+        self.addr_width = shared_bus.addr_width
+        self.data_width = shared_bus.data_width
+        self.granularity = shared_bus.granularity
+        self._features = shared_bus._features
+        self._alignment = shared_bus._alignment
+
+        self._masters = []
+        self._targets = []
+
+        self._masters_convert_stmts = []
+        for master_bus in masters:
+            if isinstance(master_bus, Interface):
+                self._masters.append(master_bus)
+            elif isinstance(master_bus, Record):
+                master_interface = Interface.from_pure_record(master_bus)
+                self._masters_convert_stmts.append(
+                    master_bus.connect(master_interface)
+                )
+                self._masters.append(master_interface)
+            else:
+                raise TypeError("Master {!r} must be a Wishbone interface"
+                                .format(master_bus))
+
+        for target_bus in targets:
+            self._targets.append(target_bus)
+        
+        self.arbiter = Arbiter(
+            addr_width=self.addr_width,
+            data_width=self.data_width,
+            granularity=self.granularity,
+            features=self._features,
+            alignment=self._alignment
+        )
+        for master_bus in self._masters:
+            self.arbiter.add(master_bus)
+
+        self.decoder = Decoder(
+            addr_width=self.addr_width,
+            data_width=self.data_width,
+            granularity=self.granularity,
+            features=self._features,
+            alignment=self._alignment
+        )
+        for item in self._targets:
+            if isinstance(item, Interface):
+                self.decoder.add(item)
+            elif isinstance(item, tuple) and len(item) == 2:
+                self.decoder.add(item[0], addr=item[1])
+            else:
+                raise TypeError("Target must be a Wishbone interface, "
+                                "or a (Wishbone interface, start address) tuple, not {!r}"
+                                .format(item))
+
+    def elaborate(self, platform):
+        m = Module()
+
+        m.submodules.arbiter = self.arbiter
+        m.submodules.decoder = self.decoder
+
+        m.d.comb += (
+            self._masters_convert_stmts +
+            self.arbiter.bus.connect(self.decoder.bus)
+        )
 
         return m
