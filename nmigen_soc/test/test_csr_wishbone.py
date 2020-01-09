@@ -40,7 +40,7 @@ class WishboneCSRBridgeTestCase(unittest.TestCase):
                 r"CSR bus data width must be one of 8, 16, 32, 64, not 7"):
             WishboneCSRBridge(csr_bus=csr.Interface(addr_width=10, data_width=7))
 
-    def test_narrow(self):
+    def test_narrow_mock(self):
         mux   = csr.Multiplexer(addr_width=10, data_width=8)
         reg_1 = MockRegister(8)
         mux.add(reg_1.element)
@@ -134,7 +134,7 @@ class WishboneCSRBridgeTestCase(unittest.TestCase):
             sim.add_sync_process(sim_test())
             sim.run()
 
-    def test_wide(self):
+    def test_wide_mock(self):
         mux = csr.Multiplexer(addr_width=10, data_width=8)
         reg = MockRegister(32)
         mux.add(reg.element)
@@ -209,6 +209,87 @@ class WishboneCSRBridgeTestCase(unittest.TestCase):
             self.assertEqual((yield dut.wb_bus.dat_r), 0x00332200)
             self.assertEqual((yield reg.r_count), 1)
             self.assertEqual((yield reg.w_count), 1)
+
+        m = Module()
+        m.submodules += mux, reg, dut
+        with Simulator(m, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
+            sim.run()
+
+    def test_wide_dsl(self):
+        mux = csr.Multiplexer(addr_width=10, data_width=8)
+        # The following 31-bit register has the following layout:
+        # bits [    0] : empty, represented by 0
+        # bits [30: 1] : field "value"
+        # Note that this register does NOT have bit 31
+        reg = csr.Register("dsl", "rw", fields=[csr.Field("value", width=30, startbit=1)])
+        mux.add(reg.bus)
+        dut = WishboneCSRBridge(mux.bus, data_width=32)
+
+        def sim_test():
+            yield dut.wb_bus.cyc.eq(1)
+            yield dut.wb_bus.adr.eq(0)
+
+            yield dut.wb_bus.we.eq(1)
+
+            yield dut.wb_bus.dat_w.eq(0x44332211)
+            yield dut.wb_bus.sel.eq(0b1111)
+            yield dut.wb_bus.stb.eq(1)
+            yield
+            yield
+            yield
+            yield
+            yield
+            yield dut.wb_bus.stb.eq(0)
+            yield
+            self.assertEqual((yield dut.wb_bus.ack), 1)
+            self.assertEqual((yield reg[:]), 0x44332211)
+            self.assertEqual((yield reg.f.value[:]), (0x44332211 >> 1) & (2**30 - 1))
+
+            # partial write
+            yield dut.wb_bus.dat_w.eq(0xaabbccdd)
+            yield dut.wb_bus.sel.eq(0b0110)
+            yield dut.wb_bus.stb.eq(1)
+            yield
+            yield
+            yield
+            yield
+            yield
+            yield dut.wb_bus.stb.eq(0)
+            yield
+            self.assertEqual((yield dut.wb_bus.ack), 1)
+            self.assertEqual((yield reg[:]), 0x44332211)
+            self.assertEqual((yield reg.f.value[:]), (0x44332211 >> 1) & (2**30 - 1))
+
+            yield dut.wb_bus.we.eq(0)
+
+            yield dut.wb_bus.sel.eq(0b1111)
+            yield dut.wb_bus.stb.eq(1)
+            yield
+            yield
+            yield
+            yield
+            yield
+            yield dut.wb_bus.stb.eq(0)
+            yield
+            self.assertEqual((yield dut.wb_bus.ack), 1)
+            self.assertEqual((yield dut.wb_bus.dat_r), 0x44332211)
+
+            yield reg.f.value.s.eq(0xaaaaaaaa)
+
+            # partial read
+            yield dut.wb_bus.sel.eq(0b0110)
+            yield dut.wb_bus.stb.eq(1)
+            yield
+            yield
+            yield
+            yield
+            yield
+            yield dut.wb_bus.stb.eq(0)
+            yield
+            self.assertEqual((yield dut.wb_bus.ack), 1)
+            self.assertEqual((yield dut.wb_bus.dat_r), 0x00332200)
 
         m = Module()
         m.submodules += mux, reg, dut

@@ -27,12 +27,12 @@ def _get_rw_bitmasked_logic(r_w, elem_interface, csr_obj):
     if r_w == "r":
         return [
             elem_interface.r_data[i].eq(csr_obj[i]) for i,v in
-            enumerate(format(csr_obj._get_access_bitmask("r"), "b")[::-1]) if v=="1"
+            enumerate(csr_obj._get_access_bitmask("r")[::-1]) if v != "0"
         ]
     if r_w == "w":
         return [
             csr_obj[i].eq(elem_interface.w_data[i]) for i,v in
-            enumerate(format(csr_obj._get_access_bitmask("w"), "b")[::-1]) if v=="1"
+            enumerate(csr_obj._get_access_bitmask("w")[::-1]) if v != "0"
         ]
 
 
@@ -127,6 +127,7 @@ class Bank(Elaboratable):
         # - If inside a `with` block, self.r returns a builder
         self.r_reader = _BuilderAttrReaderProxy(self._bank.r, "r", Bank, Register)
         self.r = self.r_reader
+        self.rststb = self.reset_strobe
 
     @property
     def addr_width(self):
@@ -146,6 +147,9 @@ class Bank(Elaboratable):
     @property
     def desc(self):
         return self._bank._desc
+    @property
+    def reset_strobe(self):
+        return self._bank._reset_strobe
 
     def _build_mux_from_bank(self):
         elem_prefix = (
@@ -204,7 +208,7 @@ class Bank(Elaboratable):
             self._dec.add(mux.bus)
 
     def _rename_field_sigs(self):
-        """Change names of field signals and their reset signals for debugging
+        """Change names of field signals for debugging
         """
         elem_prefix = (
             "bank_" + self._bank.name + "_"
@@ -215,7 +219,6 @@ class Bank(Elaboratable):
             csr_obj = self._bank._get_csr(csr_name)
             for field_name, field in csr_obj._fields.items():
                 field.signal.name = elem_prefix + field.signal.name
-                field.reset_strobe.name = elem_prefix + field.reset_strobe.name
 
     def __enter__(self):
         self.r = self._bank.r
@@ -253,26 +256,13 @@ class Bank(Elaboratable):
                     m.d.comb += elem.r_data.eq(0)
             # Write logic
             if elem.access.writable():
-                reset_val = 0
-                for _, field in csr_obj._fields.items():
-                    reset_val |= (field._reset_value << field._startbit)
-                csr_sig = Signal(len(csr_obj), reset=reset_val)
-                m.d.sync += csr_sig.eq(csr_obj[:])
-                with m.If(elem.w_stb):
-                    m.d.comb += _get_rw_bitmasked_logic("w", elem, csr_obj)
-                with m.Else():
-                    m.d.comb += csr_obj[:].eq(csr_sig)
+                with m.If(elem.w_stb & ~csr_obj.rststb & ~self._bank._reset_strobe):
+                    m.d.sync += _get_rw_bitmasked_logic("w", elem, csr_obj)
             # Reset logic
-            for _, field in csr_obj._fields.items():
-                reset_now = Signal(reset=0, name=field.signal.name+"_rstnow")
-                with m.If(field.reset_strobe):
-                    m.d.sync += [
-                        field.reset_strobe.eq(0),
-                        reset_now.eq(1)
-                    ]
-                with m.If(reset_now):
-                    m.d.comb += field.signal.eq(field.reset_value)
-                    m.d.sync += reset_now.eq(0)
+            with m.If(csr_obj.rststb | self._bank._reset_strobe):
+                m.d.sync += [
+                    f.s.eq(f.reset_value) for _, f in csr_obj._fields.items()
+                ]
         return m
 
 
@@ -314,6 +304,8 @@ class _BankBuilder:
             raise TypeError("Description must be a string, not {!r}"
                             .format(desc))
         self._desc = desc
+        self._reset_strobe = Signal(reset=0)
+        self.rststb = self.reset_strobe
         self._regs = OrderedDict()
         # A CSR register list representation
         self.registers = self.regs = self.r = _BankBuilderRegs(self)
@@ -324,6 +316,9 @@ class _BankBuilder:
     @property
     def desc(self):
         return self._desc
+    @property
+    def reset_strobe(self):
+        return self._reset_strobe
 
     def _add_reg(self, reg):
         """Converts reg to _RegisterInBank,
@@ -400,6 +395,7 @@ class _RegisterBase:
         # - If inside a `with` block, self.r returns a builder
         self.f_reader = _BuilderAttrReaderProxy(self._csr.f, "f", Register, Field)
         self.f = self.f_reader
+        self.rststb = self.reset_strobe
 
     @property
     def alignment(self):
@@ -418,6 +414,9 @@ class _RegisterBase:
     @property
     def desc(self):
         return self._csr.desc
+    @property
+    def reset_strobe(self):
+        return self._csr._reset_strobe
 
     def _build_bus_from_reg(self):
         width = len(self._csr)
@@ -426,11 +425,10 @@ class _RegisterBase:
                                        name="csr_"+self._csr.name)
 
     def _rename_field_sigs(self):
-        """Change names of field signals and their reset signals for debugging
+        """Change names of field signals for debugging
         """
         for field_name, field in self._csr._fields.items():
             field.signal.name = "csr_" + self._csr.name + "_field_" + field.name
-            field.reset_strobe.name = "csr_" + self._csr.name + "_field_" + field.name + "_rststb"
 
     def __getitem__(self, key):
         """Slicing from the field list in units of bit
@@ -443,22 +441,6 @@ class _RegisterBase:
         this returns the total number of bits spanned by its fields.
         """
         return self._csr.__len__()
-
-    def reset(self, sim=False):
-        """Assign the default value to all the field signals in the register for exactly 1 clock.
-
-        Parameters
-        ----------
-        sim : bool
-            Flag to denote whether the logic is to be yielded for simulation purposes.
-            If True, this returns a generator that yields the reset command from all of the fields.
-            If False, this returns a list of assignment statements to be used by `m.d.domain_name +=`.
-            Defaults to True.
-        """
-        if sim:
-            yield from self._csr.reset(sim=True)
-        else:
-            return self._csr.reset(sim=False)
 
 
 class _RegisterStandalone(_RegisterBase, Elaboratable):
@@ -486,26 +468,13 @@ class _RegisterStandalone(_RegisterBase, Elaboratable):
                 m.d.comb += self._bus.r_data.eq(0)
         # Write logic
         if self._csr.access.writable():
-            reset_val = 0
-            for _, field in self._csr._fields.items():
-                reset_val |= (field._reset_value << field._startbit)
-            csr_sig = Signal(len(self._csr), reset=reset_val)
-            m.d.sync += csr_sig.eq(self._csr[:])
             with m.If(self._bus.w_stb):
-                m.d.comb += _get_rw_bitmasked_logic("w", self._bus, self._csr)
-            with m.Else():
-                m.d.comb += self._csr[:].eq(csr_sig)
+                m.d.sync += _get_rw_bitmasked_logic("w", self._bus, self._csr)
         # Reset logic
-        for _, field in self._csr._fields.items():
-            reset_now = Signal(reset=0, name=field.signal.name+"_rstnow")
-            with m.If(field.reset_strobe):
-                m.d.sync += [
-                    field.reset_strobe.eq(0),
-                    reset_now.eq(1)
-                ]
-            with m.If(reset_now):
-                m.d.comb += field.signal.eq(field.reset_value)
-                m.d.sync += reset_now.eq(0)
+        with m.If(self._csr.rststb):
+            m.d.sync += [
+                f.s.eq(f.reset_value) for _, f in self._csr._fields.items()
+            ]
         return m
 
 
@@ -585,6 +554,11 @@ class _RegisterBuilder:
             raise TypeError("Description must be a string, not {!r}"
                             .format(desc))
         self._desc = desc
+        self._dontcare = Signal(shape=self._width,
+                                reset_less=True,
+                                name="") if self._width is not None else None
+        self._reset_strobe = Signal(reset=0)
+        self.rststb = self.reset_strobe
         self._fields = OrderedDict()
         # Counter for total number of bits from the list of fields
         self._bitcount = 0
@@ -608,6 +582,9 @@ class _RegisterBuilder:
     @property
     def desc(self):
         return self._desc
+    @property
+    def reset_strobe(self):
+        return self._reset_strobe
     @property
     def bitcount(self):
         return self._bitcount
@@ -666,6 +643,11 @@ class _RegisterBuilder:
             field._access = self._access
         # Add field to list
         self._fields[field.name] = field
+        # If width is not fixed, change "don't care" signal width
+        if not self._width:
+            self._dontcare = Signal(shape=self._bitcount, 
+                                    reset_less=True,
+                                    name="")
 
     def _get_field(self, name):
         if name in self._fields:
@@ -687,48 +669,50 @@ class _RegisterBuilder:
             raise IndexError("Slice start {} must be less than slice end {}"
                              .format(start, end))
         # Get a list of fields covered (even partially) by the slice
-        fl = [self._fields[name] for name in self._fields.keys() if (
-                self._fields[name].endbit >= start and self._fields[name].startbit < end
-             )]
+        fl = [
+            f for _, f in self._fields.items() if (
+                f.endbit >= start and f.startbit < end
+            )
+        ]
+        # Sort the list of fields in ascending order of startbit
+        fl.sort(key=(lambda x: x.startbit))
         # Make slices of individual signals
-        l = [f.signal[0 if f.startbit>=start else start-f.startbit : f.width if f.endbit<end else -(f.endbit+1-end)] for f in fl]
+        # Note that bits that do not correspond to any fields are considered as assignable Signals
+        l, i = [], start
+        for f in fl:
+            if f.startbit > i:
+                l.append(self._dontcare[i : i+f.startbit-i])
+                i = f.startbit
+            if f.endbit >= end:
+                l.append(f.signal[(i-f.startbit):-(f.endbit+1-end)])
+                i = f.endbit + 1
+                break
+            else:
+                l.append(f.signal[(i-f.startbit):])
+                i = f.endbit + 1
+        if i < end:
+            l.append(self._dontcare[i : end])
         if len(l) == 0:
             return None
         return l
 
     def _get_access_bitmask(self, access):
+        """Return a bitmask string corresponding to the access mode of each field.
+        This string starts with the MSB and ends with the LSB.
+        Note that bits that do not correspond to any field are marked as '-' (don't care).
+        """
         if not isinstance(access, Element.Access) and access not in ("r", "w", "rw"):
             raise ValueError("Access mode must be one of \"r\", \"w\", or \"rw\", not {!r}"
                              .format(access))
         access = Element.Access(access)
-        bitmask = 0
-        for name, field in self._fields.items():
-            # Skip fields when the enquired access mode is excluded from the field access mode
-            if not field.access.does_allow(access):
-                continue
-            startbit, stopbit = field.startbit, field.endbit
-            for bit in range(startbit, stopbit+1):
-                bitmask |= (1 << bit)
-        return bitmask
-
-    def reset(self, sim=False):
-        """Assign the default value to all the field signals in the register for exactly 1 clock.
-
-        Parameters
-        ----------
-        sim : bool
-            Flag to denote whether the logic is to be yielded for simulation purposes.
-            If True, this returns a generator that yields the reset command from all of the fields.
-            If False, this returns a list of assignment statements to be used by `m.d.domain_name +=`.
-            Defaults to True.
-        """
-        if len(self._fields) == 0:
-            raise ValueError("At least one field must be present for a register reset")
-        if sim:
-            for _,field in self._fields.items():
-                yield field.reset()
-        else:
-            return [field.reset() for _,field in self._fields.items()]
+        n = self._bitcount if self._width is None else self._width
+        bitmask = ["-" for _ in range(n)]
+        for _, field in self._fields.items():
+            if field.access.does_allow(access):
+                bitmask[field.startbit:field.endbit+1] = "1" * field.width
+            else:
+                bitmask[field.startbit:field.endbit+1] = "0" * field.width
+        return "".join(bitmask[::-1])
 
     def __len__(self):
         """Get the width of the register (using ``len(<Register-object>)``,
@@ -809,9 +793,6 @@ class Field:
                               reset_less=True,
                               name=self._name+"_signal")
         self.sig = self.s = self.signal
-        # A reset signal for the field signal
-        self._reset_strobe = Signal(reset=0)
-        self.rst = self.reset_strobe
         # Build Enums from self._field._enums, if already exists
         self._build_field_enums()
         # Context manager: 
@@ -844,9 +825,6 @@ class Field:
     @property
     def signal(self):
         return self._signal
-    @property
-    def reset_strobe(self):
-        return self._reset_strobe
 
     # A dynamically-created Enum class
     Enums = None
@@ -871,16 +849,6 @@ class Field:
         """Slicing from the field signal in units of bit
         """
         return self._signal[key]
-
-    def reset(self):
-        """Assign the default value to the field signal for exactly 1 clock.
-
-        Returns
-        -------
-        Assign
-            Assignment statement that can be used in combinatorial or synchronous context.
-        """
-        return Assign(self._reset_strobe, 1, src_loc_at=1)
 
 
 class _FieldBuilderEnums(_BuilderProxy):
