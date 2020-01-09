@@ -154,14 +154,11 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr._csr._get_access_bitmask("r"), 0b101)
         self.assertEqual(csr._csr._get_access_bitmask("w"), 0b110)
         self.assertEqual(csr._csr._get_access_bitmask("rw"), 0b100)
-        # Element, Field.signal and Field.reset_strobe names
+        # Element, Field.signal names
         self.assertEqual(csr.bus.name, "csr_flexible_width")
         self.assertEqual(csr.f.r0.s.name, "csr_flexible_width_field_r0")
         self.assertEqual(csr.f.w0.s.name, "csr_flexible_width_field_w0")
         self.assertEqual(csr.f.rw0.s.name, "csr_flexible_width_field_rw0")
-        self.assertEqual(csr.f.r0.rst.name, "csr_flexible_width_field_r0_rststb")
-        self.assertEqual(csr.f.w0.rst.name, "csr_flexible_width_field_w0_rststb")
-        self.assertEqual(csr.f.rw0.rst.name, "csr_flexible_width_field_rw0_rststb")
         # Register slicing (check repr only)
         self.assertEqual(repr(csr[:]), repr(csr._csr[:]))
         self.assertEqual(repr(csr[0]), repr(csr._csr[-3]))
@@ -198,14 +195,11 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr._csr._get_access_bitmask("r"), 0b000000000000000000)
         self.assertEqual(csr._csr._get_access_bitmask("w"), 0b111111111111000001)
         self.assertEqual(csr._csr._get_access_bitmask("rw"), 0b000000000000000000)
-        # Element, Field.signal and Field.reset_strobe names
+        # Element, Field.signal names
         self.assertEqual(csr.bus.name, "csr_fixed_width")
         self.assertEqual(csr.f.w0.s.name, "csr_fixed_width_field_w0")
         self.assertEqual(csr.f.w1.s.name, "csr_fixed_width_field_w1")
         self.assertEqual(csr.f.w2.s.name, "csr_fixed_width_field_w2")
-        self.assertEqual(csr.f.w0.rst.name, "csr_fixed_width_field_w0_rststb")
-        self.assertEqual(csr.f.w1.rst.name, "csr_fixed_width_field_w1_rststb")
-        self.assertEqual(csr.f.w2.rst.name, "csr_fixed_width_field_w2_rststb")
         # Register slicing (check repr only)
         self.assertEqual(repr(csr[:]), repr(csr._csr[:]))
         self.assertEqual(repr(csr[6]), repr(csr._csr[-14]))
@@ -224,19 +218,22 @@ class RegisterTestCase(unittest.TestCase):
                 Field("w0", access="w", width=10, reset_value=0x2aa),
                 Field("rw0", width=10, reset_value=0x155)
             ]
+        self.dut_rst = Signal()
+        self.dut = ResetInserter(self.dut_rst)(self.dut)
 
     def test_sim(self):
         def sim_test():
             # read, before write
             yield self.dut.bus.r_stb.eq(1)
-            yield 
+            yield
             self.assertEqual((yield self.dut._csr[:]), 0x155aa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
             yield self.dut.bus.r_stb.eq(0)
             # write once
             yield self.dut.bus.w_stb.eq(1)
             yield self.dut.bus.w_data.eq((0x155<<10) | (0x2aa<<20))
-            yield 
+            yield
+            yield
             self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
             yield self.dut.bus.w_stb.eq(0)
@@ -257,6 +254,7 @@ class RegisterTestCase(unittest.TestCase):
             yield self.dut.bus.w_stb.eq(1)
             yield self.dut.bus.w_data.eq((0x155<<10) | (0x2aa<<20))
             yield
+            yield
             self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
             yield self.dut.bus.w_stb.eq(0)
@@ -267,7 +265,9 @@ class RegisterTestCase(unittest.TestCase):
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
 
             # reset and read
-            yield from self.dut.reset(sim=True)
+            yield self.dut_rst.eq(1)
+            yield
+            yield self.dut_rst.eq(0)
             yield
             yield
             self.assertEqual((yield self.dut._csr[:]), 0x155aa955)
@@ -276,6 +276,7 @@ class RegisterTestCase(unittest.TestCase):
             # write again
             yield self.dut.bus.w_stb.eq(1)
             yield self.dut.bus.w_data.eq((0x2aa<<10) | (0x2aa<<20))
+            yield
             yield
             self.assertEqual((yield self.dut._csr[:]), 0x2aaaa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
@@ -315,14 +316,11 @@ class BankBuilderTestCase(unittest.TestCase):
         # Multiplexer attributes
         self.assertEqual(cbank.mux.bus.addr_width, 13)
         self.assertEqual(cbank.mux.bus.data_width, 10)
-        # Element, Field.signal and Field.reset_strobe names
+        # Element, Field.signal names
         self.assertEqual(cbank._elements["basic"].name, "bank_basic_csr_basic")
         self.assertEqual(cbank.r.basic.f.r0.s.name, "bank_basic_csr_basic_field_r0")
         self.assertEqual(cbank.r.basic.f.w0.s.name, "bank_basic_csr_basic_field_w0")
         self.assertEqual(cbank.r.basic.f.rw0.s.name, "bank_basic_csr_basic_field_rw0")
-        self.assertEqual(cbank.r.basic.f.r0.rst.name, "bank_basic_csr_basic_field_r0_rststb")
-        self.assertEqual(cbank.r.basic.f.w0.rst.name, "bank_basic_csr_basic_field_w0_rststb")
-        self.assertEqual(cbank.r.basic.f.rw0.rst.name, "bank_basic_csr_basic_field_rw0_rststb")
         # Register slicing (check repr only)
         self.assertEqual(repr(cbank.r.basic[:]), repr(cbank._bank._regs["basic"]._csr[:]))
         self.assertEqual(repr(cbank.r.basic[2]), repr(cbank._bank._regs["basic"]._csr[-1]))
@@ -359,15 +357,10 @@ class BankBuilderTestCase(unittest.TestCase):
         self.assertEqual(cbank.r.foo.f.r0.s.name, "csr_foo_field_r0")
         self.assertEqual(cbank.r.foo.f.r1.s.name, "csr_foo_field_r1")
         self.assertEqual(cbank.r.foo.f.r2.s.name, "csr_foo_field_r2")
-        self.assertEqual(cbank.r.foo.f.r0.rst.name, "csr_foo_field_r0_rststb")
-        self.assertEqual(cbank.r.foo.f.r1.rst.name, "csr_foo_field_r1_rststb")
-        self.assertEqual(cbank.r.foo.f.r2.rst.name, "csr_foo_field_r2_rststb")
         self.assertEqual(cbank._elements["bar"].name, "csr_bar")
         self.assertEqual(cbank.r.bar.f.w0.s.name, "csr_bar_field_w0")
-        self.assertEqual(cbank.r.bar.f.w0.rst.name, "csr_bar_field_w0_rststb")
         self.assertEqual(cbank._elements["baz"].name, "csr_baz")
         self.assertEqual(cbank.r.baz.f.rw0.s.name, "csr_baz_field_rw0")
-        self.assertEqual(cbank.r.baz.f.rw0.rst.name, "csr_baz_field_rw0_rststb")
         # Register slicing (check repr only)
         self.assertEqual(repr(cbank.r.foo[:]), repr(cbank._bank._regs["foo"]._csr[:]))
         self.assertEqual(repr(cbank.r.bar[10:20]), repr(cbank._bank._regs["bar"]._csr[10:20]))
@@ -403,8 +396,8 @@ class BankTestCase(unittest.TestCase):
                          fields=[Field("val", width=4, reset_value=0x4)],
                          alignment=4)
             ]
-        #self.dut_rst = Signal()
-        #self.dut = ResetInserter(self.dut_rst)(self.dut)
+        self.dut_rst = Signal()
+        self.dut = ResetInserter(self.dut_rst)(self.dut)
 
     def check_mux_alignment(self):
         if not hasattr(self, "dut"):
@@ -585,11 +578,11 @@ class BankTestCase(unittest.TestCase):
                                  "addr={}".format(addr))
 
             # reset register values
-            yield from self.dut.r.reg_8_r.reset(sim=True)
-            yield from self.dut.r.reg_16_rw.reset(sim=True)
-            yield from self.dut.r.reg_4_w.reset(sim=True)
+            yield self.dut_rst.eq(1)
             yield
             # after reset, check all csr signals
+            yield self.dut_rst.eq(0)
+            yield
             yield
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)

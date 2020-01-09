@@ -204,7 +204,7 @@ class Bank(Elaboratable):
             self._dec.add(mux.bus)
 
     def _rename_field_sigs(self):
-        """Change names of field signals and their reset signals for debugging
+        """Change names of field signals for debugging
         """
         elem_prefix = (
             "bank_" + self._bank.name + "_"
@@ -215,7 +215,6 @@ class Bank(Elaboratable):
             csr_obj = self._bank._get_csr(csr_name)
             for field_name, field in csr_obj._fields.items():
                 field.signal.name = elem_prefix + field.signal.name
-                field.reset_strobe.name = elem_prefix + field.reset_strobe.name
 
     def __enter__(self):
         self.r = self._bank.r
@@ -259,20 +258,9 @@ class Bank(Elaboratable):
                 csr_sig = Signal(len(csr_obj), reset=reset_val)
                 m.d.sync += csr_sig.eq(csr_obj[:])
                 with m.If(elem.w_stb):
-                    m.d.comb += _get_rw_bitmasked_logic("w", elem, csr_obj)
+                    m.d.sync += _get_rw_bitmasked_logic("w", elem, csr_obj)
                 with m.Else():
-                    m.d.comb += csr_obj[:].eq(csr_sig)
-            # Reset logic
-            for _, field in csr_obj._fields.items():
-                reset_now = Signal(reset=0, name=field.signal.name+"_rstnow")
-                with m.If(field.reset_strobe):
-                    m.d.sync += [
-                        field.reset_strobe.eq(0),
-                        reset_now.eq(1)
-                    ]
-                with m.If(reset_now):
-                    m.d.comb += field.signal.eq(field.reset_value)
-                    m.d.sync += reset_now.eq(0)
+                    m.d.sync += csr_obj[:].eq(csr_sig)
         return m
 
 
@@ -426,11 +414,10 @@ class _RegisterBase:
                                        name="csr_"+self._csr.name)
 
     def _rename_field_sigs(self):
-        """Change names of field signals and their reset signals for debugging
+        """Change names of field signals for debugging
         """
         for field_name, field in self._csr._fields.items():
             field.signal.name = "csr_" + self._csr.name + "_field_" + field.name
-            field.reset_strobe.name = "csr_" + self._csr.name + "_field_" + field.name + "_rststb"
 
     def __getitem__(self, key):
         """Slicing from the field list in units of bit
@@ -443,22 +430,6 @@ class _RegisterBase:
         this returns the total number of bits spanned by its fields.
         """
         return self._csr.__len__()
-
-    def reset(self, sim=False):
-        """Assign the default value to all the field signals in the register for exactly 1 clock.
-
-        Parameters
-        ----------
-        sim : bool
-            Flag to denote whether the logic is to be yielded for simulation purposes.
-            If True, this returns a generator that yields the reset command from all of the fields.
-            If False, this returns a list of assignment statements to be used by `m.d.domain_name +=`.
-            Defaults to True.
-        """
-        if sim:
-            yield from self._csr.reset(sim=True)
-        else:
-            return self._csr.reset(sim=False)
 
 
 class _RegisterStandalone(_RegisterBase, Elaboratable):
@@ -492,20 +463,9 @@ class _RegisterStandalone(_RegisterBase, Elaboratable):
             csr_sig = Signal(len(self._csr), reset=reset_val)
             m.d.sync += csr_sig.eq(self._csr[:])
             with m.If(self._bus.w_stb):
-                m.d.comb += _get_rw_bitmasked_logic("w", self._bus, self._csr)
+                m.d.sync += _get_rw_bitmasked_logic("w", self._bus, self._csr)
             with m.Else():
-                m.d.comb += self._csr[:].eq(csr_sig)
-        # Reset logic
-        for _, field in self._csr._fields.items():
-            reset_now = Signal(reset=0, name=field.signal.name+"_rstnow")
-            with m.If(field.reset_strobe):
-                m.d.sync += [
-                    field.reset_strobe.eq(0),
-                    reset_now.eq(1)
-                ]
-            with m.If(reset_now):
-                m.d.comb += field.signal.eq(field.reset_value)
-                m.d.sync += reset_now.eq(0)
+                m.d.sync += self._csr[:].eq(csr_sig)
         return m
 
 
@@ -711,25 +671,6 @@ class _RegisterBuilder:
                 bitmask |= (1 << bit)
         return bitmask
 
-    def reset(self, sim=False):
-        """Assign the default value to all the field signals in the register for exactly 1 clock.
-
-        Parameters
-        ----------
-        sim : bool
-            Flag to denote whether the logic is to be yielded for simulation purposes.
-            If True, this returns a generator that yields the reset command from all of the fields.
-            If False, this returns a list of assignment statements to be used by `m.d.domain_name +=`.
-            Defaults to True.
-        """
-        if len(self._fields) == 0:
-            raise ValueError("At least one field must be present for a register reset")
-        if sim:
-            for _,field in self._fields.items():
-                yield field.reset()
-        else:
-            return [field.reset() for _,field in self._fields.items()]
-
     def __len__(self):
         """Get the width of the register (using ``len(<Register-object>)``,
         in a `with <Register-object> as register` block`).
@@ -809,9 +750,6 @@ class Field:
                               reset_less=True,
                               name=self._name+"_signal")
         self.sig = self.s = self.signal
-        # A reset signal for the field signal
-        self._reset_strobe = Signal(reset=0)
-        self.rst = self.reset_strobe
         # Build Enums from self._field._enums, if already exists
         self._build_field_enums()
         # Context manager: 
@@ -844,9 +782,6 @@ class Field:
     @property
     def signal(self):
         return self._signal
-    @property
-    def reset_strobe(self):
-        return self._reset_strobe
 
     # A dynamically-created Enum class
     Enums = None
@@ -871,16 +806,6 @@ class Field:
         """Slicing from the field signal in units of bit
         """
         return self._signal[key]
-
-    def reset(self):
-        """Assign the default value to the field signal for exactly 1 clock.
-
-        Returns
-        -------
-        Assign
-            Assignment statement that can be used in combinatorial or synchronous context.
-        """
-        return Assign(self._reset_strobe, 1, src_loc_at=1)
 
 
 class _FieldBuilderEnums(_BuilderProxy):
