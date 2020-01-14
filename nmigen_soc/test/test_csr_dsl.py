@@ -151,9 +151,9 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr.f.rw0.width, 1)
         self.assertEqual(csr.f.rw0.endbit, 2)
         # access bitmask
-        self.assertEqual(csr._csr._get_access_bitmask("r"), 0b101)
-        self.assertEqual(csr._csr._get_access_bitmask("w"), 0b110)
-        self.assertEqual(csr._csr._get_access_bitmask("rw"), 0b100)
+        self.assertEqual(csr._csr._get_access_bitmask("r"), "101")
+        self.assertEqual(csr._csr._get_access_bitmask("w"), "110")
+        self.assertEqual(csr._csr._get_access_bitmask("rw"), "100")
         # Element, Field.signal names
         self.assertEqual(csr.bus.name, "csr_flexible_width")
         self.assertEqual(csr.f.r0.s.name, "csr_flexible_width_field_r0")
@@ -161,8 +161,17 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr.f.rw0.s.name, "csr_flexible_width_field_rw0")
         # Register slicing (check repr only)
         self.assertEqual(repr(csr[:]), repr(csr._csr[:]))
-        self.assertEqual(repr(csr[0]), repr(csr._csr[-3]))
+        self.assertEqual(repr(csr[:]),
+            repr(Cat(csr.f.r0.s[:], csr.f.w0.s[:], csr.f.rw0.s[:]))
+        )
+        self.assertEqual(repr(csr[-3]), repr(csr._csr[0]))
+        self.assertEqual(repr(csr[-3]),
+            repr(Cat(csr.f.r0.s[:]))
+        )
         self.assertEqual(repr(csr[1:3]), repr(csr._csr[1:3]))
+        self.assertEqual(repr(csr[1:3]),
+            repr(Cat(csr.f.w0.s[:], csr.f.rw0.s[:]))
+        )
 
     def test_fixed_width(self):
         csr = Register("fixed_width", "w", width=20, 
@@ -172,7 +181,7 @@ class RegisterBuilderTestCase(unittest.TestCase):
                            Field("w2", width=2)
                        ],
                        desc="Write-only register with fixed width")
-        # reg "flexible_width"
+        # reg "fixed_width"
         self.assertEqual(len(csr), 20)
         self.assertEqual(csr.name, "fixed_width")
         self.assertEqual(csr.access, Element.Access.W)
@@ -192,9 +201,9 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr.f.w2.startbit, 16)
         self.assertEqual(csr.f.w2.endbit, 17)
         # access bitmask
-        self.assertEqual(csr._csr._get_access_bitmask("r"), 0b000000000000000000)
-        self.assertEqual(csr._csr._get_access_bitmask("w"), 0b111111111111000001)
-        self.assertEqual(csr._csr._get_access_bitmask("rw"), 0b000000000000000000)
+        self.assertEqual(csr._csr._get_access_bitmask("r"), "--000000000000-----0")
+        self.assertEqual(csr._csr._get_access_bitmask("w"), "--111111111111-----1")
+        self.assertEqual(csr._csr._get_access_bitmask("rw"), "--000000000000-----0")
         # Element, Field.signal names
         self.assertEqual(csr.bus.name, "csr_fixed_width")
         self.assertEqual(csr.f.w0.s.name, "csr_fixed_width_field_w0")
@@ -202,8 +211,22 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(csr.f.w2.s.name, "csr_fixed_width_field_w2")
         # Register slicing (check repr only)
         self.assertEqual(repr(csr[:]), repr(csr._csr[:]))
-        self.assertEqual(repr(csr[6]), repr(csr._csr[-14]))
-        self.assertEqual(repr(csr[5:18]), repr(csr._csr[5:18]))
+        self.assertEqual(repr(csr[:]),
+            repr(Cat(csr.f.w0.s[:], csr._csr._dontcare[1:6],
+                     csr.f.w1.s[:], csr.f.w2.s[:], csr._csr._dontcare[18:20]))
+        )
+        self.assertEqual(repr(csr[-14]), repr(csr._csr[6]))
+        self.assertEqual(repr(csr[-14]),
+            repr(Cat(csr.f.w1.s[:1]))
+        )
+        self.assertEqual(repr(csr[-16:-15]), repr(csr._csr[4:5]))
+        self.assertEqual(repr(csr[-16:-15]),
+            repr(Cat(csr._csr._dontcare[4:5]))
+        )
+        self.assertEqual(repr(csr[5:17]), repr(csr._csr[5:17]))
+        self.assertEqual(repr(csr[5:17]),
+            repr(Cat(csr._csr._dontcare[5:6], csr.f.w1.s[:], csr.f.w2.s[:1]))
+        )
 
     # TODO: Define some more unit tests about error raising
     #
@@ -218,6 +241,7 @@ class RegisterTestCase(unittest.TestCase):
                 Field("w0", access="w", width=10, reset_value=0x2aa),
                 Field("rw0", width=10, reset_value=0x155)
             ]
+        # sync reset
         self.dut_rst = Signal()
         self.dut = ResetInserter(self.dut_rst)(self.dut)
 
@@ -265,10 +289,17 @@ class RegisterTestCase(unittest.TestCase):
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
 
             # reset and read
+            # (sync reset doesn't affect CSR)
             yield self.dut_rst.eq(1)
             yield
             yield self.dut_rst.eq(0)
             yield
+            self.assertEqual((yield self.dut._csr[:]), 0x2aa55555)
+            self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+            # (Register reset strobe affects CSR)
+            yield self.dut.rststb.eq(1)
+            yield
+            yield self.dut.rststb.eq(0)
             yield
             self.assertEqual((yield self.dut._csr[:]), 0x155aa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
@@ -372,13 +403,13 @@ class BankBuilderTestCase(unittest.TestCase):
 
 class BankTestCase(unittest.TestCase):
     def test_mux_sim(self):
-        self.dut = Bank(addr_width=16, data_width=8, alignment=2, type="mux")
+        self.dut = Bank(addr_width=5, data_width=8, alignment=2, type="mux")
         self.set_up_registers()
         self.check_mux_alignment()
         self.simulate(type="mux")
 
     def test_dec_sim(self):
-        self.dut = Bank(addr_width=16, data_width=8, alignment=2, type="dec")
+        self.dut = Bank(addr_width=5, data_width=8, alignment=2, type="dec")
         self.set_up_registers()
         self.check_dec_alignment()
         self.simulate(type="dec")
@@ -578,11 +609,26 @@ class BankTestCase(unittest.TestCase):
                                  "addr={}".format(addr))
 
             # reset register values
+            # (sync reset doesn't affect CSR)
             yield self.dut_rst.eq(1)
             yield
-            # after reset, check all csr signals
             yield self.dut_rst.eq(0)
             yield
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x4436)
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
+            # (Register reset strobe affects CSR)
+            yield self.dut.r.reg_16_rw.rststb.eq(1)
+            yield
+            yield self.dut.r.reg_16_rw.rststb.eq(0)
+            yield
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
+            # (Bank reset strobe affects all CSRs)
+            yield self.dut.rststb.eq(1)
+            yield
+            yield self.dut.rststb.eq(0)
             yield
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
