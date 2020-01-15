@@ -20,20 +20,18 @@ def _is_bit_overlapping(startbit, endbit, bitrange_list):
     return False
 
 
-def _get_rw_bitmasked_logic(r_w, elem_interface, csr_obj):
-    """Helper function that returns the statements of assigning to r_data or from w_data,
-    based on the bitmask of the csr
+def _get_rw_bitmasked(r_w, elem_interface, csr_obj):
+    """Helper function that returns the bitmasked value of the CSR,
+    depending on whether a read or write will operate on the CSR
     """
+    # Both reads and writes include all bits where no fields are assigned
+    bitmask = int(csr_obj._get_access_bitmask(r_w).replace("-", "1"), 2)
     if r_w == "r":
-        return [
-            elem_interface.r_data[i].eq(csr_obj[i]) for i,v in
-            enumerate(csr_obj._get_access_bitmask("r")[::-1]) if v != "0"
-        ]
+        return (csr_obj.s & bitmask)
     if r_w == "w":
-        return [
-            csr_obj[i].eq(elem_interface.w_data[i]) for i,v in
-            enumerate(csr_obj._get_access_bitmask("w")[::-1]) if v != "0"
-        ]
+        return (csr_obj.s & ~bitmask) | (elem_interface.w_data & bitmask)
+    raise ValueError("Bitmasking mode must be \"r\" or \"w\", not {!r}"
+                     .format(r_w))
 
 
 class _BuilderProxy:
@@ -121,12 +119,12 @@ class Bank(Elaboratable):
             raise ValueError("Type must be \"mux\" (for multiplexer) or \"dec\" (for decoder), not {!r}"
                              .format(name))
 
-        self._rename_field_sigs()
+        self._rename_csr_sigs()
         # Context manager: 
         # - If outside a `with` block, self.r returns a reader
         # - If inside a `with` block, self.r returns a builder
         self.r_reader = _BuilderAttrReaderProxy(self._bank.r, "r", Bank, Register)
-        self.r = self.r_reader
+        self.registers = self.regs = self.r = self.r_reader
         self.rststb = self.reset_strobe
 
     @property
@@ -207,8 +205,8 @@ class Bank(Elaboratable):
                 self._dec.align_to(self._alignment)
             self._dec.add(mux.bus)
 
-    def _rename_field_sigs(self):
-        """Change names of field signals for debugging
+    def _rename_csr_sigs(self):
+        """Change names of register signals for debugging
         """
         elem_prefix = (
             "bank_" + self._bank.name + "_"
@@ -217,22 +215,21 @@ class Bank(Elaboratable):
         )
         for csr_name in self._bank._regs:
             csr_obj = self._bank._get_csr(csr_name)
-            for field_name, field in csr_obj._fields.items():
-                field.signal.name = elem_prefix + field.signal.name
+            csr_obj._signal.name = elem_prefix + csr_obj._signal.name
 
     def __enter__(self):
-        self.r = self._bank.r
+        self.registers = self.regs = self.r = self._bank.r
         return self
 
     def __exit__(self, e_type, e_value, e_tb):
-        self.r = self.r_reader
+        self.registers = self.regs = self.r = self.r_reader
 
         if self._type == "mux":
             self._build_mux_from_bank()
         elif self._type == "dec":
             self._build_dec_from_bank()
 
-        self._rename_field_sigs()
+        self._rename_csr_sigs()
 
     def elaborate(self, platform):
         """Elaborate
@@ -250,19 +247,25 @@ class Bank(Elaboratable):
             csr_obj = self._bank._get_csr(csr_name)
             # Read logic
             if elem.access.readable():
+                r_mux = Mux(csr_obj.rststb | self._bank._reset_strobe,
+                            csr_obj.reset_value,
+                            _get_rw_bitmasked("r", elem, csr_obj))
                 with m.If(elem.r_stb):
-                    m.d.comb += _get_rw_bitmasked_logic("r", elem, csr_obj)
+                    m.d.comb += elem.r_data.eq(r_mux)
                 with m.Else():
                     m.d.comb += elem.r_data.eq(0)
+            # Reset logic
+            rst_mux = Mux(csr_obj.rststb | self._bank._reset_strobe,
+                          csr_obj.reset_value,
+                          csr_obj.s)
+            m.d.sync += csr_obj.s.eq(rst_mux)
             # Write logic
             if elem.access.writable():
-                with m.If(elem.w_stb & ~csr_obj.rststb & ~self._bank._reset_strobe):
-                    m.d.sync += _get_rw_bitmasked_logic("w", elem, csr_obj)
-            # Reset logic
-            with m.If(csr_obj.rststb | self._bank._reset_strobe):
-                m.d.sync += [
-                    f.s.eq(f.reset_value) for _, f in csr_obj._fields.items()
-                ]
+                w_mux = Mux(csr_obj.rststb | self._bank._reset_strobe,
+                            csr_obj.reset_value,
+                            _get_rw_bitmasked("w", elem, csr_obj))
+                with m.If(elem.w_stb):
+                    m.d.sync += csr_obj.s.eq(w_mux)
         return m
 
 
@@ -394,7 +397,7 @@ class _RegisterBase:
         # - If outside a `with` block, self.r returns a reader
         # - If inside a `with` block, self.r returns a builder
         self.f_reader = _BuilderAttrReaderProxy(self._csr.f, "f", Register, Field)
-        self.f = self.f_reader
+        self.fields = self.f = self.f_reader
         self.rststb = self.reset_strobe
 
     @property
@@ -416,19 +419,27 @@ class _RegisterBase:
         return self._csr.desc
     @property
     def reset_strobe(self):
-        return self._csr._reset_strobe
+        return self._csr.reset_strobe
+    @property
+    def signal(self):
+        return self._csr.signal
+    @property
+    def sig(self):
+        return self.signal
+    @property
+    def s(self):
+        return self.signal
+
+    @property
+    def reset_value(self):
+        return self._csr.reset_value
+    
 
     def _build_bus_from_reg(self):
         width = len(self._csr)
         access = self._csr.access
         self.bus = self._bus = Element(width, access,
                                        name="csr_"+self._csr.name)
-
-    def _rename_field_sigs(self):
-        """Change names of field signals for debugging
-        """
-        for field_name, field in self._csr._fields.items():
-            field.signal.name = "csr_" + self._csr.name + "_field_" + field.name
 
     def __getitem__(self, key):
         """Slicing from the field list in units of bit
@@ -446,51 +457,55 @@ class _RegisterBase:
 class _RegisterStandalone(_RegisterBase, Elaboratable):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rename_field_sigs()
         self._build_bus_from_reg()
 
     def __enter__(self):
-        self.f = self._csr.f
+        self.fields = self.f = self._csr.f
         return self
 
     def __exit__(self, e_type, e_value, e_tb):
-        self.f = self.f_reader
-        self._rename_field_sigs()
+        self.fields = self.f = self.f_reader
         self._build_bus_from_reg()
 
     def elaborate(self, platform):
         m = Module()
+
         # Read logic
         if self._csr.access.readable():
+            r_mux = Mux(self._csr.rststb,
+                        self._csr.reset_value,
+                        _get_rw_bitmasked("r", self._bus, self._csr))
             with m.If(self._bus.r_stb):
-                m.d.comb += _get_rw_bitmasked_logic("r", self._bus, self._csr)
+                m.d.comb += self._bus.r_data.eq(r_mux)
             with m.Else():
                 m.d.comb += self._bus.r_data.eq(0)
+        # Reset logic
+        rst_mux = Mux(self._csr.rststb,
+                      self._csr.reset_value,
+                      self._csr.s)
+        m.d.sync += self._csr.s.eq(rst_mux)
         # Write logic
         if self._csr.access.writable():
+            w_mux = Mux(self._csr.rststb,
+                        self._csr.reset_value,
+                        _get_rw_bitmasked("w", self._bus, self._csr))
             with m.If(self._bus.w_stb):
-                m.d.sync += _get_rw_bitmasked_logic("w", self._bus, self._csr)
-        # Reset logic
-        with m.If(self._csr.rststb):
-            m.d.sync += [
-                f.s.eq(f.reset_value) for _, f in self._csr._fields.items()
-            ]
+                m.d.sync += self._csr.s.eq(w_mux)
+        
         return m
 
 
 class _RegisterInBank(_RegisterBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._rename_field_sigs()
         self._build_bus_from_reg()
 
     def __enter__(self):
-        self.f = self._csr.f
+        self.fields = self.f = self._csr.f
         return self
 
     def __exit__(self, e_type, e_value, e_tb):
-        self.f = self.f_reader
-        self._rename_field_sigs()
+        self.fields = self.f = self.f_reader
         self._build_bus_from_reg()
 
 
@@ -554,14 +569,16 @@ class _RegisterBuilder:
             raise TypeError("Description must be a string, not {!r}"
                             .format(desc))
         self._desc = desc
-        self._dontcare = Signal(shape=self._width,
-                                reset_less=True,
-                                name="") if self._width is not None else None
-        self._reset_strobe = Signal(reset=0)
+        self._reset_strobe = Signal(reset=0,
+                                    name="csr_"+self._name+"_rststb")
         self.rststb = self.reset_strobe
         self._fields = OrderedDict()
         # Counter for total number of bits from the list of fields
         self._bitcount = 0
+        # A Signal representing the value of the whole register
+        self._signal = Signal(shape=self._width,
+                              reset_less=True,
+                              name="csr_"+self._name+"_signal") if self._width else None
         # Appending CSR fields
         if fields is not None:
             for field in fields:
@@ -585,33 +602,35 @@ class _RegisterBuilder:
     @property
     def reset_strobe(self):
         return self._reset_strobe
+    
     @property
     def bitcount(self):
         return self._bitcount
+    @property
+    def signal(self):
+        if self._signal is None:
+            raise SyntaxError("Register with neither fixed width nor any Fields "
+                              "does not contain a Signal")
+        return self._signal
+    @property
+    def sig(self):
+        return self.signal
+    @property
+    def s(self):
+        return self.signal
+
+    @property
+    def reset_value(self):
+        if self._signal is None:
+            raise SyntaxError("Register with neither fixed width nor any Fields "
+                              "does not contain a Signal")
+        return self._get_reset_value()
+    
 
     def __getitem__(self, key):
-        """Slicing from the field list in units of bit
+        """Slicing from the whole register signal, containing both field bits and "don't care" bits
         """
-        n = self._bitcount if self._width is None else self._width
-        l = []
-        if isinstance(key, int):
-            l = self._get_field_sig_slice(key, key+1)
-        elif isinstance(key, slice):
-            start, stop, step = key.indices(n)
-            if step != 1:
-                l = [self._get_field_sig_slice(k, k+1) for k in range(start, stop, step)]
-                # Flatten
-                l = [y for x in l for y in x]
-            else:
-                l = self._get_field_sig_slice(start, stop)
-        else:
-            raise TypeError("Cannot index value with {!r}"
-                            .format(key))
-        # Return a Cat nMigen object instead of a list
-        if l is None:
-            raise ValueError("Cannot find any fields in the slice {!r}"
-                             .format(key))
-        return Cat(*l)
+        return self._signal[key]
 
     def _add_field(self, field):
         if not isinstance(field, Field):
@@ -643,11 +662,17 @@ class _RegisterBuilder:
             field._access = self._access
         # Add field to list
         self._fields[field.name] = field
-        # If width is not fixed, change "don't care" signal width
+        # If width is not fixed, change the signal width
         if not self._width:
-            self._dontcare = Signal(shape=self._bitcount, 
-                                    reset_less=True,
-                                    name="")
+            self._signal = Signal(shape=self._bitcount,
+                                  reset_less=True,
+                                  name="csr_"+self._name+"_signal")
+        # Reassign reset value from the current dict of fields to the register signal
+        if self._signal is not None:
+            self._signal.reset = self._get_reset_value()
+        # Redefine field.signal() for all fields
+        for _, field in self._fields.items():
+            field._signal = self._signal[field.startbit : field.endbit+1]
 
     def _get_field(self, name):
         if name in self._fields:
@@ -655,46 +680,13 @@ class _RegisterBuilder:
         else:
             raise AttributeError("No field named '{}' exists".format(name))
 
-    def _get_field_sig_slice(self, start, end):
-        n = self._bitcount if self._width is None else self._width
-        if start < 0:
-            start += n
-            end += n
-        if end < 0:
-            end += n
-        if start < 0 or end > n:
-            raise IndexError("Slice interval [{}, {}) must be within [-{}, {})"
-                             .format(start, end, -n, n))
-        if start > end:
-            raise IndexError("Slice start {} must be less than slice end {}"
-                             .format(start, end))
-        # Get a list of fields covered (even partially) by the slice
-        fl = [
-            f for _, f in self._fields.items() if (
-                f.endbit >= start and f.startbit < end
-            )
-        ]
-        # Sort the list of fields in ascending order of startbit
-        fl.sort(key=(lambda x: x.startbit))
-        # Make slices of individual signals
-        # Note that bits that do not correspond to any fields are considered as assignable Signals
-        l, i = [], start
-        for f in fl:
-            if f.startbit > i:
-                l.append(self._dontcare[i : i+f.startbit-i])
-                i = f.startbit
-            if f.endbit >= end:
-                l.append(f.signal[(i-f.startbit):-(f.endbit+1-end)])
-                i = f.endbit + 1
-                break
-            else:
-                l.append(f.signal[(i-f.startbit):])
-                i = f.endbit + 1
-        if i < end:
-            l.append(self._dontcare[i : end])
-        if len(l) == 0:
-            return None
-        return l
+    def _get_reset_value(self):
+        """Return the value to be assigned when the whole register (i.e. all its fields) are reset
+        """
+        reset_value = 0
+        for _, field in self._fields.items():
+            reset_value |= field.reset_value << field.startbit
+        return reset_value
 
     def _get_access_bitmask(self, access):
         """Return a bitmask string corresponding to the access mode of each field.
@@ -787,19 +779,17 @@ class Field:
         if startbit is not None:
             self._startbit = startbit
             self._endbit = self._startbit+self._width-1         # Exact bit where this field ends
-        # A field Signal representation
-        self._signal = Signal(shape=self._width,
-                              reset=self._reset_value,
-                              reset_less=True,
-                              name=self._name+"_signal")
-        self.sig = self.s = self.signal
+        # A Slice representing the value of the Field in the register
+        # (Note: A standalone Field object (i.e. without being added to a Register)
+        #        does not contain a Slice object; that must be created externally)
+        self._signal = None
         # Build Enums from self._field._enums, if already exists
         self._build_field_enums()
         # Context manager: 
         # - If outside a `with` block, self.e returns a special reader
         # - If inside a `with` block, self.e returns a builder
         self.e_reader = Field._FieldBuilderEnumsReaderProxy(self._field.e, "e", Field, [tuple, str])
-        self.e = self.e_reader
+        self.enums = self.e = self.e_reader
 
     @property
     def name(self):
@@ -824,7 +814,15 @@ class Field:
         return self._endbit
     @property
     def signal(self):
+        if self._signal is None:
+            raise SyntaxError("Standalone Field object does not contain a standalone signal")
         return self._signal
+    @property
+    def sig(self):
+        return self.signal
+    @property
+    def s(self):
+        return self.signal
 
     # A dynamically-created Enum class
     Enums = None
@@ -838,15 +836,15 @@ class Field:
                                   decoder=self.Enums, name=self._name+"_signal")
 
     def __enter__(self):
-        self.e = self._field.e
+        self.enums = self.e = self._field.e
         return self
 
     def __exit__(self, e_type, e_value, e_tb):
-        self.e = self.e_reader
+        self.enums = self.e = self.e_reader
         self._build_field_enums()
 
     def __getitem__(self, key):
-        """Slicing from the field signal in units of bit
+        """Slicing from the field signal (if already added to a register)
         """
         return self._signal[key]
 
