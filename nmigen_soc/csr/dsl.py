@@ -1,6 +1,7 @@
 from enum import Enum
 from collections import OrderedDict
 from collections.abc import Iterable
+import warnings
 
 from nmigen import *
 from nmigen.hdl.ast import Assign
@@ -20,15 +21,21 @@ def _is_bit_overlapping(startbit, endbit, bitrange_list):
     return False
 
 
-def _get_rw_bitmasked(r_w, elem_interface, csr_obj):
+def _get_rw_bitmasked(r_w, elem_interface, csr_obj, reset_value=False):
     """Helper function that returns the bitmasked value of the CSR,
     depending on whether a read or write will operate on the CSR
+
+    If reset_value is True, bitmask with the CSR reset value instead of the CSR signal
     """
     # Both reads and writes include all bits where no fields are assigned
     bitmask = int(csr_obj._get_access_bitmask(r_w).replace("-", "1"), 2)
     if r_w == "r":
+        if reset_value:
+            return (csr_obj.reset_value & bitmask)
         return (csr_obj.s & bitmask)
     if r_w == "w":
+        if reset_value:
+            return (csr_obj.reset_value & ~bitmask) | (elem_interface.w_data & bitmask)
         return (csr_obj.s & ~bitmask) | (elem_interface.w_data & bitmask)
     raise ValueError("Bitmasking mode must be \"r\" or \"w\", not {!r}"
                      .format(r_w))
@@ -125,7 +132,7 @@ class Bank(Elaboratable):
         # - If inside a `with` block, self.r returns a builder
         self.r_reader = _BuilderAttrReaderProxy(self._bank.r, "r", Bank, Register)
         self.registers = self.regs = self.r = self.r_reader
-        self.rststb = self.reset_strobe
+        self.rst_stb = self.reset_strobe
 
     @property
     def addr_width(self):
@@ -166,6 +173,8 @@ class Bank(Elaboratable):
             # Add Element of each csr and change signal names for debugging
             reg.bus.name = elem_prefix + csr_name
             self._elements[csr_name] = reg.bus
+            for field_name, field in csr_obj._fields.items():
+                field._int_w_stb.name = elem_prefix + field._int_w_stb.name
             # Set register alignments and add element to mux
             if csr_alignment is not None:
                 self._mux.align_to(csr_alignment)
@@ -196,6 +205,8 @@ class Bank(Elaboratable):
             # Add Element of each csr and change signal names for debugging
             reg.bus.name = elem_prefix + csr_name
             self._elements[csr_name] = reg.bus
+            for field_name, field in csr_obj._fields.items():
+                field._int_w_stb.name = elem_prefix + field._int_w_stb.name
             # Add element to the current mux
             mux.add(reg.bus)
             # Set mux alignments and add the mux bus to the decoder
@@ -247,25 +258,33 @@ class Bank(Elaboratable):
             csr_obj = self._bank._get_csr(csr_name)
             # Read logic
             if elem.access.readable():
-                r_mux = Mux(csr_obj.rststb | self._bank._reset_strobe,
-                            csr_obj.reset_value,
+                r_mux = Mux(csr_obj.rst_stb | self._bank._reset_strobe,
+                            _get_rw_bitmasked("r", elem, csr_obj, reset_value=True),
                             _get_rw_bitmasked("r", elem, csr_obj))
                 with m.If(elem.r_stb):
                     m.d.comb += elem.r_data.eq(r_mux)
                 with m.Else():
                     m.d.comb += elem.r_data.eq(0)
             # Reset logic
-            rst_mux = Mux(csr_obj.rststb | self._bank._reset_strobe,
-                          csr_obj.reset_value,
-                          csr_obj.s)
-            m.d.sync += csr_obj.s.eq(rst_mux)
+            with m.If(csr_obj.rst_stb | self._bank._reset_strobe):
+                m.d.sync += csr_obj.s.eq(csr_obj.reset_value)
+            # Internal Write logic
+            write_from_logic_by_field = 0
+            for _, field in csr_obj._fields.items():
+                write_from_logic_by_field |= field.int_w_stb
+            with m.Elif(csr_obj.int_w_stb):
+                m.d.sync += csr_obj.s.eq(csr_obj.int_w_data)
+            with m.Elif(write_from_logic_by_field):
+                for _, field in csr_obj._fields.items():
+                    field_int_w_mux = Mux(field.int_w_stb,
+                                          field.int_w_data,
+                                          field.s)
+                    m.d.sync += field.s.eq(field_int_w_mux)
             # Write logic
             if elem.access.writable():
-                w_mux = Mux(csr_obj.rststb | self._bank._reset_strobe,
-                            csr_obj.reset_value,
-                            _get_rw_bitmasked("w", elem, csr_obj))
-                with m.If(elem.w_stb):
-                    m.d.sync += csr_obj.s.eq(w_mux)
+                with m.Elif(elem.w_stb):
+                    m.d.sync += csr_obj.s.eq(_get_rw_bitmasked("w", elem, csr_obj))
+
         return m
 
 
@@ -308,7 +327,7 @@ class _BankBuilder:
                             .format(desc))
         self._desc = desc
         self._reset_strobe = Signal(reset=0)
-        self.rststb = self.reset_strobe
+        self.rst_stb = self.reset_strobe
         self._regs = OrderedDict()
         # A CSR register list representation
         self.registers = self.regs = self.r = _BankBuilderRegs(self)
@@ -398,7 +417,7 @@ class _RegisterBase:
         # - If inside a `with` block, self.r returns a builder
         self.f_reader = _BuilderAttrReaderProxy(self._csr.f, "f", Register, Field)
         self.fields = self.f = self.f_reader
-        self.rststb = self.reset_strobe
+        self.rst_stb = self.reset_strobe
 
     @property
     def alignment(self):
@@ -420,6 +439,7 @@ class _RegisterBase:
     @property
     def reset_strobe(self):
         return self._csr.reset_strobe
+
     @property
     def signal(self):
         return self._csr.signal
@@ -431,9 +451,34 @@ class _RegisterBase:
         return self.signal
 
     @property
+    def int_w_stb(self):
+        return self._csr.int_w_stb
+    @property
+    def set_enable(self):
+        return self.int_w_stb
+    @property
+    def set_en(self):
+        return self.int_w_stb
+    @property
+    def set_stb(self):
+        return self.int_w_stb
+
+    @property
+    def int_w_data(self):
+        return self._csr.int_w_data
+    @property
+    def set_value(self):
+        return self.int_w_data
+    @property
+    def set_val(self):
+        return self.int_w_data
+
+    @property
     def reset_value(self):
         return self._csr.reset_value
-    
+    @property
+    def rst_val(self):
+        return self.reset_value
 
     def _build_bus_from_reg(self):
         width = len(self._csr)
@@ -471,26 +516,33 @@ class _RegisterStandalone(_RegisterBase, Elaboratable):
         m = Module()
 
         # Read logic
-        if self._csr.access.readable():
-            r_mux = Mux(self._csr.rststb,
-                        self._csr.reset_value,
+        if self._bus.access.readable():
+            r_mux = Mux(self._csr.rst_stb,
+                        _get_rw_bitmasked("r", self._bus, self._csr, reset_value=True),
                         _get_rw_bitmasked("r", self._bus, self._csr))
             with m.If(self._bus.r_stb):
                 m.d.comb += self._bus.r_data.eq(r_mux)
             with m.Else():
                 m.d.comb += self._bus.r_data.eq(0)
         # Reset logic
-        rst_mux = Mux(self._csr.rststb,
-                      self._csr.reset_value,
-                      self._csr.s)
-        m.d.sync += self._csr.s.eq(rst_mux)
+        with m.If(self._csr.rst_stb):
+            m.d.sync += self._csr.s.eq(self._csr.reset_value)
+        # Internal Write logic
+        write_from_logic_by_field = 0
+        for _, field in self._csr._fields.items():
+            write_from_logic_by_field |= field.int_w_stb
+        with m.Elif(self._csr.int_w_stb):
+            m.d.sync += self._csr.s.eq(self._csr.int_w_data)
+        with m.Elif(write_from_logic_by_field):
+            for _, field in self._csr._fields.items():
+                field_int_w_mux = Mux(field.int_w_stb,
+                                      field.int_w_data,
+                                      field.s)
+                m.d.sync += field.s.eq(field_int_w_mux)
         # Write logic
-        if self._csr.access.writable():
-            w_mux = Mux(self._csr.rststb,
-                        self._csr.reset_value,
-                        _get_rw_bitmasked("w", self._bus, self._csr))
-            with m.If(self._bus.w_stb):
-                m.d.sync += self._csr.s.eq(w_mux)
+        if self._bus.access.writable():
+            with m.Elif(self._bus.w_stb):
+                m.d.sync += self._csr.s.eq(_get_rw_bitmasked("w", self._bus, self._csr))
         
         return m
 
@@ -570,16 +622,21 @@ class _RegisterBuilder:
                             .format(desc))
         self._desc = desc
         self._reset_strobe = Signal(reset=0,
-                                    name="csr_"+self._name+"_rststb")
-        self.rststb = self.reset_strobe
+                                    name="csr_"+self._name+"_rst_stb")
+        self.rst_stb = self.reset_strobe
         self._fields = OrderedDict()
         # Counter for total number of bits from the list of fields
         self._bitcount = 0
         # A Signal representing the value of the whole register
-        self._signal = Signal(shape=self._width,
+        self._signal = Signal(self._width,
                               reset_less=True,
                               name="csr_"+self._name+"_signal") if self._width else None
-        # Appending CSR fields
+        # A strobe & data signal for writes from the logic (i.e. not from the bus)
+        self._int_w_stb = Signal(reset=0,
+                                 name="csr_"+self._name+"_setstb")
+        self.set_enable = self.set_en = self.set_stb = self.int_w_stb
+        self._int_w_data = Signal(self._width,
+                                  name="csr_"+self._name+"_setval") if self._width else None
         if fields is not None:
             for field in fields:
                 self._add_field(field)
@@ -606,6 +663,7 @@ class _RegisterBuilder:
     @property
     def bitcount(self):
         return self._bitcount
+
     @property
     def signal(self):
         if self._signal is None:
@@ -620,12 +678,31 @@ class _RegisterBuilder:
         return self.signal
 
     @property
+    def int_w_stb(self):
+        return self._int_w_stb
+
+    @property
+    def int_w_data(self):
+        if self._int_w_data is None:
+            raise SyntaxError("Register with neither fixed width nor any Fields "
+                              "does not contain a Signal for internal value assignment")
+        return self._int_w_data
+    @property
+    def set_value(self):
+        return self.int_w_data
+    @property
+    def set_val(self):
+        return self.int_w_data
+
+    @property
     def reset_value(self):
         if self._signal is None:
             raise SyntaxError("Register with neither fixed width nor any Fields "
                               "does not contain a Signal")
         return self._get_reset_value()
-    
+    @property
+    def rst_val(self):
+        return self.reset_value
 
     def __getitem__(self, key):
         """Slicing from the whole register signal, containing both field bits and "don't care" bits
@@ -664,15 +741,20 @@ class _RegisterBuilder:
         self._fields[field.name] = field
         # If width is not fixed, change the signal width
         if not self._width:
-            self._signal = Signal(shape=self._bitcount,
+            self._signal = Signal(self._bitcount,
                                   reset_less=True,
                                   name="csr_"+self._name+"_signal")
+            self._int_w_data = Signal(self._bitcount,
+                                      name="csr_"+self._name+"_setval")
         # Reassign reset value from the current dict of fields to the register signal
         if self._signal is not None:
             self._signal.reset = self._get_reset_value()
-        # Redefine field.signal() for all fields
+        # Redefine field.signal & field.int_w_data for all fields,
+        # & rename field.int_w_stb
         for _, field in self._fields.items():
             field._signal = self._signal[field.startbit : field.endbit+1]
+            field._int_w_data = self._int_w_data[field.startbit : field.endbit+1]
+            field._int_w_stb.name = "csr_"+self._name+"field_"+field.name+"_setstb"
 
     def _get_field(self, name):
         if name in self._fields:
@@ -766,10 +848,14 @@ class Field:
             raise TypeError("Size must be an integer, not {!r}"
                             .format(width))
         self._width = int(width)
+        if "reset" in kwargs:
+            reset_value=reset
+            warnings.warn("To assign a reset value to the field, use `reset_value=...` instead")
         if not isinstance(reset_value, int):
             raise TypeError("Reset value must be an integer, not {!r}"
                             .format(reset_value))
         self._reset_value = reset_value
+        self.rst_val = self.reset_value
         if desc is not None and not isinstance(desc, str):
             raise TypeError("Description must be a string, not {!r}"
                             .format(desc))
@@ -781,8 +867,15 @@ class Field:
             self._endbit = self._startbit+self._width-1         # Exact bit where this field ends
         # A Slice representing the value of the Field in the register
         # (Note: A standalone Field object (i.e. without being added to a Register)
-        #        does not contain a Slice object; that must be created externally)
+        #        does not contain this Slice object; that must be created externally)
         self._signal = None
+        # A strobe & data signal for writes from the logic (i.e. not from the bus)
+        # (Note: A standalone Field object (i.e. without being added to a Register)
+        #        does not contain the data Signal; that must be created externally)
+        self._int_w_stb = Signal(reset=0,
+                                 name="field_"+self._name+"_setstb")
+        self.set_enable = self.set_en = self.set_stb = self.int_w_stb
+        self._int_w_data = None
         # Build Enums from self._field._enums, if already exists
         self._build_field_enums()
         # Context manager: 
@@ -824,6 +917,23 @@ class Field:
     def s(self):
         return self.signal
 
+    @property
+    def int_w_stb(self):
+        return self._int_w_stb
+
+    @property
+    def int_w_data(self):
+        if self._int_w_data is None:
+            raise SyntaxError("Standalone Field object does not contain "
+                              "a standalone data signal for internal value assignment")
+        return self._int_w_data
+    @property
+    def set_value(self):
+        return self.int_w_data
+    @property
+    def set_val(self):
+        return self.int_w_data
+
     # A dynamically-created Enum class
     Enums = None
     def _build_field_enums(self):
@@ -831,9 +941,6 @@ class Field:
         if self._field._enums:
             # (Re-)build the Enums class
             self.Enums = Enum('Enums', self._field._enums)
-            # (Re-)build the decoder for the signal
-            self._signal = Signal(shape=self._width, reset=self._reset_value, reset_less=True,
-                                  decoder=self.Enums, name=self._name+"_signal")
 
     def __enter__(self):
         self.enums = self.e = self._field.e

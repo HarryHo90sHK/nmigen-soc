@@ -7,7 +7,13 @@ from ..csr.dsl import *
 from ..csr.bus import Element
 
 
-class FieldEnumBuilderTestCase(unittest.TestCase):
+def debug(*args, enable=False, **kwargs):
+    """Helper function for enabling verbose debug messages on testing
+    """
+    if enable:
+        print(*args, **kwargs)
+
+class FieldBuilderTestCase(unittest.TestCase):
     def test_tuples(self):
         with Field("f_enums_tuples", width=10) as f:
             f.e += [
@@ -59,6 +65,10 @@ class FieldTestCase(unittest.TestCase):
         self.assertEqual(f.endbit, None)
         self.assertEqual(f.reset_value, 0)
         self.assertEqual(f.desc, "1-bit read-only field")
+        # Field internal write strobe
+        self.assertEqual(f.int_w_stb.name, "field_f_1_ro_setstb")
+        self.assertEqual(f.set_stb.reset, 0)
+        self.assertEqual(len(f.set_en), 1)
 
     def test_8_rw(self):
         f = Field("f_8_rw", access="rw", 
@@ -73,6 +83,10 @@ class FieldTestCase(unittest.TestCase):
         self.assertEqual(f.endbit, 17)
         self.assertEqual(f.reset_value, 255)
         self.assertEqual(f.desc, "8-bit read/write field, 2 possible values")
+        # Field internal write strobe
+        self.assertEqual(f.int_w_stb.name, "field_f_8_rw_setstb")
+        self.assertEqual(f.set_stb.reset, 0)
+        self.assertEqual(len(f.set_en), 1)
 
     def test_10_wo(self):
         f = Field("f_10_wo", access="w", 
@@ -97,6 +111,10 @@ class FieldTestCase(unittest.TestCase):
         self.assertEqual(f.Enums.MODERATELY_LOW.value, 16)
         self.assertEqual(f.Enums.VERY_LOW.value, 4)
         self.assertEqual(f.Enums.MIN.value, 0)
+        # Field internal write strobe
+        self.assertEqual(f.int_w_stb.name, "field_f_10_wo_setstb")
+        self.assertEqual(f.set_stb.reset, 0)
+        self.assertEqual(len(f.set_en), 1)
 
     # TODO: Define some more unit tests about error raising
     #
@@ -137,8 +155,17 @@ class RegisterBuilderTestCase(unittest.TestCase):
         # Element & signal name
         self.assertEqual(csr.bus.name, "csr_flexible_width")
         self.assertEqual(csr.signal.name, "csr_flexible_width_signal")
-        # Signal reset value
+        # Signal properties
         self.assertEqual(csr.signal.reset, 0b100)
+        self.assertEqual(len(csr.signal), 3)
+        # Register internal write data properties
+        self.assertEqual(csr.int_w_data.name, "csr_flexible_width_setval")
+        self.assertEqual(csr.set_value.reset, 0)
+        self.assertEqual(len(csr.set_val), 3)
+        # Register internal write strobe properties
+        self.assertEqual(csr.int_w_stb.name, "csr_flexible_width_setstb")
+        self.assertEqual(csr.set_enable.reset, 0)
+        self.assertEqual(len(csr.set_en), 1)
         # Register slicing (check repr only)
         self.assertEqual(repr(csr[:]), repr(csr._csr[0:3]))
         self.assertEqual(repr(csr[-3]), repr(csr._csr[0]))
@@ -154,6 +181,14 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(repr(csr.f.r0[0]), repr(csr[0][0]))
         self.assertEqual(repr(csr.f.rw0[:]), repr(csr.f.rw0.s[0]))
         self.assertEqual(repr(csr.f.rw0[:]), repr(csr[2][0]))
+        # field.int_w_data()
+        self.assertEqual(repr(csr.f.r0.set_val), repr(csr.int_w_data[0:1]))
+        self.assertEqual(repr(csr.f.w0.set_val), repr(csr.int_w_data[1:2]))
+        self.assertEqual(repr(csr.f.rw0.set_val), repr(csr.int_w_data[2:3]))
+        # Field internal write data slicing (check repr only)
+        self.assertEqual(repr(csr.f.rw0.set_value[:]), repr(csr.int_w_data[2][0]))
+        self.assertEqual(repr(csr.f.w0.set_value[0]), repr(csr.int_w_data[1][0]))
+        self.assertEqual(repr(csr.f.r0.set_value[:]), repr(csr.int_w_data[0][0]))
 
     def test_fixed_width(self):
         csr = Register("fixed_width", "w", width=20, 
@@ -189,8 +224,17 @@ class RegisterBuilderTestCase(unittest.TestCase):
         # Element & signal name
         self.assertEqual(csr.bus.name, "csr_fixed_width")
         self.assertEqual(csr.signal.name, "csr_fixed_width_signal")
-        # Signal reset value
+        # Signal properties
         self.assertEqual(csr.signal.reset, 1 | (77<<6) | (2<<16))
+        self.assertEqual(len(csr.signal), 20)
+        # Register internal write data properties
+        self.assertEqual(csr.int_w_data.name, "csr_fixed_width_setval")
+        self.assertEqual(csr.set_value.reset, 0)
+        self.assertEqual(len(csr.set_val), 20)
+        # Register internal write strobe properties
+        self.assertEqual(csr.int_w_stb.name, "csr_fixed_width_setstb")
+        self.assertEqual(csr.set_enable.reset, 0)
+        self.assertEqual(len(csr.set_en), 1)
         # Register slicing (check repr only)
         self.assertEqual(repr(csr[:]), repr(csr._csr[0:20]))
         self.assertEqual(repr(csr[-14]), repr(csr._csr[6]))
@@ -207,6 +251,14 @@ class RegisterBuilderTestCase(unittest.TestCase):
         self.assertEqual(repr(csr.f.w2[-2]), repr(csr[16:18][0]))
         self.assertEqual(repr(csr.f.w1[2:-1]), repr(csr.f.w1.s[2:9]))
         self.assertEqual(repr(csr.f.w1[2:-1]), repr(csr[6:16][2:9]))
+        # field.int_w_data()
+        self.assertEqual(repr(csr.f.w0.int_w_data), repr(csr.set_value[0:1]))
+        self.assertEqual(repr(csr.f.w1.int_w_data), repr(csr.set_value[6:16]))
+        self.assertEqual(repr(csr.f.w2.int_w_data), repr(csr.set_value[16:18]))
+        # Field internal write data slicing (check repr only)
+        self.assertEqual(repr(csr.f.w2.int_w_data[-2]), repr(csr.set_val[16:18][0]))
+        self.assertEqual(repr(csr.f.w1.int_w_data[2:-1]), repr(csr.set_val[6:16][2:9]))
+        self.assertEqual(repr(csr.f.w0.int_w_data[:]), repr(csr.set_val[0][0]))
 
     # TODO: Define some more unit tests about error raising
     #
@@ -232,6 +284,8 @@ class RegisterTestCase(unittest.TestCase):
             yield
             self.assertEqual((yield self.dut.signal), 0x155aa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
             yield self.dut.bus.r_stb.eq(0)
             # write once
             yield self.dut.bus.w_stb.eq(1)
@@ -240,12 +294,16 @@ class RegisterTestCase(unittest.TestCase):
             yield
             self.assertEqual((yield self.dut.signal), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
             yield self.dut.bus.w_stb.eq(0)
             # read again
             yield self.dut.bus.r_stb.eq(1)
             yield 
             self.assertEqual((yield self.dut.signal), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
 
         with Simulator(self.dut, vcd_file=open("test.vcd", "w")) as sim:
             sim.add_clock(1e-6)
@@ -261,12 +319,16 @@ class RegisterTestCase(unittest.TestCase):
             yield
             self.assertEqual((yield self.dut.signal), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
             yield self.dut.bus.w_stb.eq(0)
             # read
             yield self.dut.bus.r_stb.eq(1)
             yield
             self.assertEqual((yield self.dut.signal), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
 
             # reset and read
             # (sync reset doesn't affect CSR)
@@ -276,13 +338,16 @@ class RegisterTestCase(unittest.TestCase):
             yield
             self.assertEqual((yield self.dut.signal), 0x2aa55555)
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
             # (Register reset strobe affects CSR)
-            yield self.dut.rststb.eq(1)
+            yield self.dut.rst_stb.eq(1)
             yield
-            yield self.dut.rststb.eq(0)
+            yield self.dut.rst_stb.eq(0)
             yield
             self.assertEqual((yield self.dut.signal), 0x155aa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
             yield self.dut.bus.r_stb.eq(0)
             # write again
             yield self.dut.bus.w_stb.eq(1)
@@ -291,14 +356,164 @@ class RegisterTestCase(unittest.TestCase):
             yield
             self.assertEqual((yield self.dut.signal), 0x2aaaa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
             yield self.dut.bus.w_stb.eq(0)
             # read again
             yield self.dut.bus.r_stb.eq(1)
             yield
             self.assertEqual((yield self.dut.signal), 0x2aaaa955)
             self.assertEqual((yield self.dut.bus.r_data), 0x2aa00155)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
 
         with Simulator(self.dut, vcd_file=open("test_with_reset.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
+            sim.run()
+
+    def test_sim_complex(self):
+        def sim_test():
+            # write once from bus and internal logic simultaneously
+            # (priority is given to internal logic)
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.bus.w_data.eq(0x387 | (0x254<<10) | (0x121<<20))
+            yield self.dut.int_w_stb.eq(1)
+            yield self.dut.int_w_data.eq(0x121 | (0x387<<10) | (0x254<<20))
+            yield
+            yield
+            self.assertEqual((yield self.dut.signal), 0x254e1d21)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            # read, without deasserting any write strobes
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x254e1d21)
+            self.assertEqual((yield self.dut.bus.r_data), 0x25400121)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 1)
+            yield self.dut.bus.r_stb.eq(0)
+            # only assert internal write strobe
+            yield self.dut.bus.w_stb.eq(0)
+            yield self.dut.int_w_stb.eq(1)
+            yield
+            yield
+            self.assertEqual((yield self.dut.signal), 0x254e1d21)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            # read, without deasserting any write strobes
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x254e1d21)
+            self.assertEqual((yield self.dut.bus.r_data), 0x25400121)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 1)
+            yield self.dut.bus.r_stb.eq(0)
+            # only assert bus write strobe
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.int_w_stb.eq(0)
+            yield
+            yield
+            self.assertEqual((yield self.dut.signal), 0x12195121)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            # read, without deasserting any write strobes
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x12195121)
+            self.assertEqual((yield self.dut.bus.r_data), 0x12100121)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
+            yield self.dut.bus.r_stb.eq(0)
+            # only assert internal write strobe of r0 and rw0
+            yield self.dut.bus.w_stb.eq(0)
+            yield self.dut.int_w_stb.eq(0)
+            yield self.dut.f.r0.int_w_stb.eq(1)
+            yield self.dut.f.r0.int_w_data.eq(0x266)
+            yield self.dut.f.w0.int_w_stb.eq(0)
+            yield self.dut.f.rw0.int_w_stb.eq(1)
+            yield self.dut.f.rw0.int_w_data.eq(0x242)
+            yield
+            yield
+            self.assertEqual((yield self.dut.signal), 0x24295266)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            # read, without deasserting any write strobes
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x24295266)
+            self.assertEqual((yield self.dut.bus.r_data), 0x24200266)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
+            yield self.dut.bus.r_stb.eq(0)
+            # deassert internal write strobe of r0 and rw0
+            yield self.dut.f.r0.int_w_stb.eq(0)
+            yield self.dut.f.rw0.int_w_stb.eq(0)
+
+            # [Reset]
+            # sync reset, deasserting all write strobes, and read
+            # (sync reset doesn't affect CSR)
+            yield self.dut.bus.r_stb.eq(1)
+            yield self.dut.bus.w_stb.eq(0)
+            yield self.dut.int_w_stb.eq(0)
+            yield self.dut_rst.eq(1)
+            yield
+            yield self.dut_rst.eq(0)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x24295266)
+            self.assertEqual((yield self.dut.bus.r_data), 0x24200266)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
+            # CSR reset, with both bus and internal write strobe asserted
+            # (priority is given to CSR reset)
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.int_w_stb.eq(1)
+            yield self.dut.rst_stb.eq(1)
+            yield
+            # Read, deasserting all write strobes
+            yield self.dut.bus.w_stb.eq(0)
+            yield self.dut.int_w_stb.eq(0)
+            yield self.dut.rst_stb.eq(0)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x155aa955)
+            self.assertEqual((yield self.dut.bus.r_data), 0x15500155)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
+            yield self.dut.bus.r_stb.eq(0)
+            # write again, only assert bus write strobe
+            yield self.dut.bus.w_stb.eq(1)
+            yield self.dut.int_w_stb.eq(0)
+            yield self.dut.bus.w_data.eq(0x3bb | (0x3bb<<10) | (0x3bb<<20))
+            yield
+            yield
+            self.assertEqual((yield self.dut.signal), 0x3bbeed55)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            # read again
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x3bbeed55)
+            self.assertEqual((yield self.dut.bus.r_data), 0x3bb00155)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 0)
+            yield self.dut.bus.r_stb.eq(0)
+            # write again, only assert internal write strobe
+            yield self.dut.bus.w_stb.eq(0)
+            yield self.dut.int_w_stb.eq(1)
+            yield self.dut.int_w_data.eq(0x077 | (0x077<<10) | (0x077<<20))
+            yield
+            yield
+            self.assertEqual((yield self.dut.signal), 0x0771dc77)
+            self.assertEqual((yield self.dut.bus.r_data), 0x00000000)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            # read again
+            yield self.dut.bus.r_stb.eq(1)
+            yield
+            self.assertEqual((yield self.dut.signal), 0x0771dc77)
+            self.assertEqual((yield self.dut.bus.r_data), 0x07700077)
+            self.assertEqual((yield self.dut.rst_stb), 0)
+            self.assertEqual((yield self.dut.int_w_stb), 1)
+
+        with Simulator(self.dut, vcd_file=open("test_complex.vcd", "w")) as sim:
             sim.add_clock(1e-6)
             sim.add_sync_process(sim_test())
             sim.run()
@@ -378,17 +593,23 @@ class BankBuilderTestCase(unittest.TestCase):
 
 
 class BankTestCase(unittest.TestCase):
-    def test_mux_sim(self):
+    def test_mux_sim(self, debug_en=False):
         self.dut = Bank(addr_width=5, data_width=8, alignment=2, type="mux")
         self.set_up_registers()
         self.check_mux_alignment()
-        self.simulate(type="mux")
+        self.simulate(type="mux", debug_en=debug_en)
 
-    def test_dec_sim(self):
+    def debug_mux_sim(self):
+        self.test_mux_sim(debug_en=True)
+
+    def test_dec_sim(self, debug_en=False):
         self.dut = Bank(addr_width=5, data_width=8, alignment=2, type="dec")
         self.set_up_registers()
         self.check_dec_alignment()
-        self.simulate(type="dec")
+        self.simulate(type="dec", debug_en=debug_en)
+
+    def debug_dec_sim(self):
+        self.test_dec_sim(debug_en=True)
 
     def set_up_registers(self):
         with self.dut:
@@ -428,7 +649,7 @@ class BankTestCase(unittest.TestCase):
             (muxes["reg_4_w"].bus.memory_map, (16, 18, 1)),
         ])
 
-    def simulate(self, type):
+    def simulate(self, type, debug_en):
         def get_reg_elem(name):
             return self.dut._elements[name]
         def get_reg_csr_sig(name):
@@ -454,35 +675,34 @@ class BankTestCase(unittest.TestCase):
             # before write, read reg_8_r
             yield bus_to_test.r_stb.eq(1)
             yield bus_to_test.addr.eq(0)
-            yield                                               # r_data is latched 1 cycle later
-            self.assertEqual((yield get_reg_elem("reg_8_r").r_stb), 1)
             yield
+            self.assertEqual((yield get_reg_elem("reg_8_r").r_stb), 1)
+            yield                                               # r_data is latched 1 cycle after r_stb
             self.assertEqual((yield bus_to_test.r_data), 0x22)
             # before write, read reg_16_rw
             expected_r_data[4] = 0x16                           # [8:5] is write-only
             expected_r_data[5] = 0x98                           # The rest can be read
             expected_r_data[6] = 0x00                           # except after addr=5
             expected_r_data[7] = 0x00
-            #print("\nreg_16_rw:")
-            for addr in range(4,8):
+            debug("\n[BUS READ reg_16_rw]"
+                  "\n<reg_16_rw>", enable=debug_en)
+            for addr in range(4, 8):
                 yield bus_to_test.addr.eq(addr)
-                yield                                           # r_data is latched 1 cycle later
-                """
-                print("addr={}:".format(addr))
-                print("\tdec.bus.addr={}, mux.bus.addr={}"
+                yield
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
                       .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
                               (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
-                              (yield self.dut.mux.bus.addr)))
-                print("\tdec.bus.r_stb={}, mux.bus.r_stb={}, elem.r_stb={}"
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tdec.bus.r_stb={}, mux.bus.r_stb={}, elem.r_stb={}"
                       .format((yield self.dut.dec.bus.r_stb) if type=="dec" else "--",
                               (yield self.dut._muxes["reg_16_rw"].bus.r_stb) if type=="dec" else
                               (yield self.dut.mux.bus.r_stb),
-                              (yield get_reg_elem("reg_16_rw").r_stb)))
-                """
+                              (yield get_reg_elem("reg_16_rw").r_stb)), enable=debug_en)
                 self.assertEqual((yield get_reg_elem("reg_16_rw").r_stb), 
                                  1 if addr == 4 else 0,
                                  "addr={}".format(addr))        # Only enabled for 1st chunk
-                yield
+                yield                                           # r_data is latched 1 cycle after r_stb
                 self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
@@ -491,9 +711,8 @@ class BankTestCase(unittest.TestCase):
             expected_r_data[17] = 0x00                          # Write-only
             expected_r_data[18] = 0x00                          # Write-only
             expected_r_data[19] = 0x00                          # Write-only
-            for addr in range(16,20):
+            for addr in range(16, 20):
                 yield bus_to_test.addr.eq(addr)
-                yield                                           # r_data is latched 1 cycle later
                 yield
                 self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
@@ -506,24 +725,23 @@ class BankTestCase(unittest.TestCase):
             actual_w_data[17], expected_w_data[17] = 0xaa, 0x00 # The rest won't be written
             actual_w_data[18], expected_w_data[18] = 0x99, 0x00
             actual_w_data[19], expected_w_data[19] = 0x88, 0x00
-            #print("\nreg_4_w:")
-            for addr in range(16,20):
+            debug("\n[BUS WRITE reg_4_w]"
+                  "\n<reg_4_w>", enable=debug_en)
+            for addr in range(16, 20):
                 yield bus_to_test.addr.eq(addr)
                 yield bus_to_test.w_data.eq(actual_w_data[addr])
                 yield                                           # w_stb is latched 1 cycle later
                 yield
-                """
-                print("addr={}:".format(addr))
-                print("\tdec.bus.addr={}, mux.bus.addr={}"
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
                       .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
                               (yield self.dut._muxes["reg_4_w"].bus.addr) if type=="dec" else
-                              (yield self.dut.mux.bus.addr)))
-                print("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
                       .format((yield self.dut.dec.bus.w_stb) if type=="dec" else "--",
                               (yield self.dut._muxes["reg_4_w"].bus.w_stb) if type=="dec" else
                               (yield self.dut.mux.bus.w_stb),
-                              (yield get_reg_elem("reg_4_w").w_stb)))
-                """
+                              (yield get_reg_elem("reg_4_w").w_stb)), enable=debug_en)
                 self.assertEqual((yield get_reg_elem("reg_4_w").w_stb), 
                                  1 if addr == 16 else 0,
                                  "addr={}".format(addr))        # Only enabled for last actual chunk
@@ -535,24 +753,23 @@ class BankTestCase(unittest.TestCase):
             actual_w_data[5], expected_w_data[5] = 0x44, 0x44   # Chunks 1-2 can be written
             actual_w_data[6], expected_w_data[6] = 0x55, 0x00   # The rest won't be written
             actual_w_data[7], expected_w_data[7] = 0x66, 0x00
-            #print("\nreg_16_rw:")
-            for addr in range(4,8):
+            debug("\n[BUS WRITE reg_16_rw]"
+                  "\n<reg_16_rw>", enable=debug_en)
+            for addr in range(4, 8):
                 yield bus_to_test.addr.eq(addr)
                 yield bus_to_test.w_data.eq(actual_w_data[addr])
                 yield                                           # w_stb is latched 1 cycle later
                 yield
-                """
-                print("addr={}:".format(addr))
-                print("\tdec.bus.addr={}, mux.bus.addr={}"
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
                       .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
                               (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
-                              (yield self.dut.mux.bus.addr)))
-                print("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
                       .format((yield self.dut.dec.bus.w_stb) if type=="dec" else "--",
                               (yield self.dut._muxes["reg_16_rw"].bus.w_stb) if type=="dec" else
                               (yield self.dut.mux.bus.w_stb),
-                              (yield get_reg_elem("reg_16_rw").w_stb)))
-                """
+                              (yield get_reg_elem("reg_16_rw").w_stb)), enable=debug_en)
                 self.assertEqual((yield get_reg_elem("reg_16_rw").w_stb), 
                                  1 if addr == 5 else 0,
                                  "addr={}".format(addr))        # Only enabled for last actual chunk
@@ -573,18 +790,30 @@ class BankTestCase(unittest.TestCase):
             expected_r_data[5] = 0x44                           # The rest can be read
             expected_r_data[6] = 0x00                           # except after addr=5
             expected_r_data[7] = 0x00
-            for addr in range(4,8):
+            debug("\n[BUS READ reg_16_rw]"
+                  "\n<reg_16_rw>", enable=debug_en)
+            for addr in range(4, 8):
                 yield bus_to_test.addr.eq(addr)
                 yield
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tdec.bus.r_stb={}, mux.bus.r_stb={}, elem.r_stb={}"
+                      .format((yield self.dut.dec.bus.r_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.r_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.r_stb),
+                              (yield get_reg_elem("reg_16_rw").r_stb)), enable=debug_en)
                 self.assertEqual((yield get_reg_elem("reg_16_rw").r_stb), 
                                  1 if addr == 4 else 0,
                                  "addr={}".format(addr))        # Only enabled for 1st chunk
-                yield
+                yield                                           # r_data is latched 1 cycle after r_stb
                 self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
 
-            # reset register values
+            # sync reset and read
             # (sync reset doesn't affect CSR)
             yield self.dut_rst.eq(1)
             yield
@@ -593,34 +822,227 @@ class BankTestCase(unittest.TestCase):
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x4436)
             self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
+            # CSR reset and read
             # (Register reset strobe affects CSR)
-            yield self.dut.r.reg_16_rw.rststb.eq(1)
+            yield self.dut.r.reg_16_rw.rst_stb.eq(1)
             yield
-            yield self.dut.r.reg_16_rw.rststb.eq(0)
+            yield self.dut.r.reg_16_rw.rst_stb.eq(0)
             yield
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
             self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
-            # (Bank reset strobe affects all CSRs)
-            yield self.dut.rststb.eq(1)
+            # Bank reset, with both bus and internal write strobe asserted
+            # (priority is given to CSR reset on all registers)
+            # - assert bank bus write strobe
+            #   (w_stb per element must be driven by bank bus only)
+            yield bus_to_test.w_stb.eq(1)
+            # - assert all internal write strobes
+            #   (int_w_stb per element must be driven individually)
+            yield self.dut.r.reg_8_r.int_w_stb.eq(1)
+            yield self.dut.r.reg_16_rw.int_w_stb.eq(1)
+            yield self.dut.r.reg_4_w.int_w_stb.eq(1)
+            # - deassert all per-element reset strobe
+            #   (rst_stb per element must be driven individually)
+            yield self.dut.r.reg_8_r.rst_stb.eq(0)
+            yield self.dut.r.reg_16_rw.rst_stb.eq(0)
+            yield self.dut.r.reg_4_w.rst_stb.eq(0)
+            # - assert bank bus reset strobe
+            #   (rst_stb per element is independent from bank rst_stb)
+            yield self.dut.rst_stb.eq(1)
             yield
-            yield self.dut.rststb.eq(0)
-            yield
+            # Check register signal, without deasserting bus reset strobe or any write strobes
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
-            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0x4)
-            # after reset, read reg_16_rw
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
+            # read reg_16_rw, deasserting all write strobes but NOT bus reset strobe
+            yield bus_to_test.r_stb.eq(1)
+            yield bus_to_test.w_stb.eq(0)
+            yield self.dut.r.reg_8_r.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.int_w_stb.eq(0)
+            yield self.dut.r.reg_4_w.int_w_stb.eq(0)
             expected_r_data[4] = 0x16                           # [8:5] is write-only
             expected_r_data[5] = 0x98                           # The rest can be read
             expected_r_data[6] = 0x00                           # except after addr=5
             expected_r_data[7] = 0x00
-            for addr in range(4,8):
+            debug("\n[BUS READ reg_16_rw, with BANK RESET active]"
+                  "\n<reg_16_rw>", enable=debug_en)
+            for addr in range(4, 8):
                 yield bus_to_test.addr.eq(addr)
                 yield
-                yield
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tbank.rst_stb={}, csr_obj.bus.rst_stb={}"
+                      .format((yield self.dut.rst_stb),
+                              (yield self.dut._bank._get_csr("reg_16_rw").rst_stb)), enable=debug_en)
+                debug("\tdec.bus.r_stb={}, mux.bus.r_stb={}, elem.r_stb={}"
+                      .format((yield self.dut.dec.bus.r_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.r_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.r_stb),
+                              (yield get_reg_elem("reg_16_rw").r_stb)), enable=debug_en)
+                yield                                           # r_data is latched 1 cycle after r_stb
                 self.assertEqual((yield bus_to_test.r_data), 
                                  expected_r_data[addr],
                                  "addr={}".format(addr))
+            yield bus_to_test.r_stb.eq(0)
+            # Deassert bank bus reset strobe now
+            yield self.dut.rst_stb.eq(0)
+            yield
+            # Check register signals again
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0x4)
+
+            # write again, with both bus and internal write strobe asserted
+            # (priority is given to internal logic per register/field)
+            # - assert bank bus write strobe
+            yield bus_to_test.w_stb.eq(1)
+            # - assert:
+            #   - reg_8_r internal write strobe (by register)
+            #   - reg_16_rw.wo & reg_16_rw.rw internal write strobes (by field)
+            yield self.dut.r.reg_8_r.int_w_stb.eq(1)
+            yield self.dut.r.reg_16_rw.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.f.ro.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.f.wo.int_w_stb.eq(1)
+            yield self.dut.r.reg_16_rw.f.rw.int_w_stb.eq(1)
+            yield self.dut.r.reg_4_w.int_w_stb.eq(0)
+            # - assign reg_8_r internal write data (will be used)
+            yield self.dut.r.reg_8_r.int_w_data.eq(0xCC)
+            # - assign reg_8_r bus write data (read-only, so w_data won't be used)
+            debug("\n[INTERNAL WRITE reg_8_r] & [INTERNAL WRITE reg_16_rw.wo, reg_16_rw.rw] & [BUS WRITE reg_4_w]"
+                  "\n<reg_8_r>", enable=debug_en)
+            yield bus_to_test.addr.eq(0)
+            yield bus_to_test.w_data.eq(0xBB)
+            yield                                               # w_stb is latched 1 cycle later
+            yield
+            debug("addr={}:".format(0), enable=debug_en)
+            debug("\tdec.bus.addr={}, mux.bus.addr={}"
+                  .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                          (yield self.dut._muxes["reg_8_r"].bus.addr) if type=="dec" else
+                          (yield self.dut.mux.bus.addr)), enable=debug_en)
+            debug("\tcsr_obj.bus.int_w_stb={} (val={})"
+                  .format((yield self.dut._bank._get_csr("reg_8_r").int_w_stb),
+                          (yield self.dut._bank._get_csr("reg_8_r").f.val.int_w_stb)), enable=debug_en)
+            # - assign reg_16_rw internal write data (won't be used)
+            yield self.dut.r.reg_16_rw.int_w_data.eq(0xFFFF)
+            # - assign reg_16_rw.wo & reg_16_rw.rw internal write data
+            yield self.dut.r.reg_16_rw.f.ro.int_w_data.eq(0b10101)          # (won't be used)
+            yield self.dut.r.reg_16_rw.f.wo.int_w_data.eq(0b0001)           # (will be used)
+            yield self.dut.r.reg_16_rw.f.rw.int_w_data.eq(0b01000011)       # (will be used)
+            # - assign reg_16_rw bus write data
+            actual_w_data[4], expected_w_data[4] = 0x24, 0x24   # Chunk w_data ignores bitwise access
+            actual_w_data[5], expected_w_data[5] = 0x97, 0x97   # Chunks 1-2 can be written
+            actual_w_data[6], expected_w_data[6] = 0x68, 0x00   # The rest won't be written
+            actual_w_data[7], expected_w_data[7] = 0x53, 0x00
+            debug("<reg_16_rw>", enable=debug_en)
+            for addr in range(4, 8):
+                yield bus_to_test.addr.eq(addr)
+                yield bus_to_test.w_data.eq(actual_w_data[addr])
+                yield                                           # w_stb is latched 1 cycle later
+                yield
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tcsr_obj.bus.int_w_stb={} (ro={}, wo={}, rw={})"
+                      .format((yield self.dut._bank._get_csr("reg_16_rw").int_w_stb),
+                              (yield self.dut._bank._get_csr("reg_16_rw").f.ro.int_w_stb),
+                              (yield self.dut._bank._get_csr("reg_16_rw").f.wo.int_w_stb),
+                              (yield self.dut._bank._get_csr("reg_16_rw").f.rw.int_w_stb)), enable=debug_en)
+                debug("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
+                      .format((yield self.dut.dec.bus.w_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.w_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.w_stb),
+                              (yield get_reg_elem("reg_16_rw").w_stb)), enable=debug_en)
+                self.assertEqual((yield get_reg_elem("reg_16_rw").w_stb), 
+                                 1 if addr == 5 else 0,
+                                 "addr={}".format(addr))        # Only enabled for last actual chunk
+            self.assertEqual((yield get_reg_elem("reg_16_rw").w_data),
+                             concat_chunks(expected_w_data, 4, 8))
+            # - assign reg_4_w bus write data
+            actual_w_data[16], expected_w_data[16] = 0x73, 0x03 # Only chunk 1 can be written
+            actual_w_data[17], expected_w_data[17] = 0x91, 0x00 # The rest won't be written
+            actual_w_data[18], expected_w_data[18] = 0x64, 0x00
+            actual_w_data[19], expected_w_data[19] = 0x28, 0x00
+            debug("<reg_4_w>", enable=debug_en)
+            for addr in range(16, 20):
+                yield bus_to_test.addr.eq(addr)
+                yield bus_to_test.w_data.eq(actual_w_data[addr])
+                yield                                           # w_stb is latched 1 cycle later
+                yield
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_4_w"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tcsr_obj.bus.int_w_stb={} (val={})"
+                      .format((yield self.dut._bank._get_csr("reg_4_w").int_w_stb),
+                              (yield self.dut._bank._get_csr("reg_4_w").f.val.int_w_stb)), enable=debug_en)
+                debug("\tdec.bus.w_stb={}, mux.bus.w_stb={}, elem.w_stb={}"
+                      .format((yield self.dut.dec.bus.w_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_4_w"].bus.w_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.w_stb),
+                              (yield get_reg_elem("reg_4_w").w_stb)), enable=debug_en)
+                self.assertEqual((yield get_reg_elem("reg_4_w").w_stb), 
+                                 1 if addr == 16 else 0,
+                                 "addr={}".format(addr))        # Only enabled for last actual chunk
+            self.assertEqual((yield get_reg_elem("reg_4_w").w_data),
+                             concat_chunks(expected_w_data, 16, 20))
+            # - check if register signals prioritise internal write data
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0xCC)      # uses per-reg internal write
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 
+                             0b1000011000110110)                            # uses per-field internal write
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0x3)       # uses bus write
+            # deassert all write strobes
+            yield bus_to_test.w_stb.eq(0)
+            yield self.dut.r.reg_8_r.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.f.ro.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.f.wo.int_w_stb.eq(0)
+            yield self.dut.r.reg_16_rw.f.rw.int_w_stb.eq(0)
+            yield self.dut.r.reg_4_w.int_w_stb.eq(0)
+            yield self.dut.rst_stb.eq(0)
+            # read reg_8_r
+            yield bus_to_test.r_stb.eq(1)
+            yield bus_to_test.addr.eq(0)
+            yield
+            self.assertEqual((yield get_reg_elem("reg_8_r").r_stb), 1)
+            yield                                               # r_data is latched 1 cycle after r_stb
+            self.assertEqual((yield bus_to_test.r_data), 0xCC)
+            # read reg_16_rw
+            expected_r_data[4] = 0b00010110                     # [8:5] is write-only,  == 0x16
+            expected_r_data[5] = 0b10000110                     # The rest can be read, == 0x86
+            expected_r_data[6] = 0x00                           # except after addr=5
+            expected_r_data[7] = 0x00
+            debug("\n[BUS READ reg_16_rw]"
+                  "\n<reg_16_rw>", enable=debug_en)
+            for addr in range(4, 8):
+                yield bus_to_test.addr.eq(addr)
+                yield
+                debug("addr={}:".format(addr), enable=debug_en)
+                debug("\tdec.bus.addr={}, mux.bus.addr={}"
+                      .format((yield self.dut.dec.bus.addr) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.addr) if type=="dec" else
+                              (yield self.dut.mux.bus.addr)), enable=debug_en)
+                debug("\tdec.bus.r_stb={}, mux.bus.r_stb={}, elem.r_stb={}"
+                      .format((yield self.dut.dec.bus.r_stb) if type=="dec" else "--",
+                              (yield self.dut._muxes["reg_16_rw"].bus.r_stb) if type=="dec" else
+                              (yield self.dut.mux.bus.r_stb),
+                              (yield get_reg_elem("reg_16_rw").r_stb)), enable=debug_en)
+                yield                                           # r_data is latched 1 cycle after r_stb
+                self.assertEqual((yield bus_to_test.r_data), 
+                                 expected_r_data[addr],
+                                 "addr={}".format(addr))
+            # Deassert bank bus read strobe now
+            yield bus_to_test.r_stb.eq(0)
+            yield
+            # check final register signals
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0xCC)
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x8636)
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0x3)
 
         with Simulator(self.dut, vcd_file=open("test.vcd", "w")) as sim:
             sim.add_clock(1e-6)
