@@ -253,7 +253,9 @@ class Multiplexer(Elaboratable):
             # to be powers of 2.)
             with m.Switch(self.bus.addr):
                 for chunk_offset, chunk_addr in enumerate(range(elem_start, elem_end)):
-                    shadow_slice = shadow.word_select(chunk_offset, self.bus.data_width)
+                    def segment(index):
+                        return slice(index * self.bus.data_width, (index + 1) * self.bus.data_width)
+                    shadow_slice = shadow[segment(chunk_offset)]
 
                     with m.Case(chunk_addr):
                         if elem.access.readable():

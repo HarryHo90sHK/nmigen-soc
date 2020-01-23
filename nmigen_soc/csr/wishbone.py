@@ -59,31 +59,49 @@ class WishboneCSRBridge(Elaboratable):
 
         m = Module()
 
-        cycle = Signal(range(len(wb_bus.sel) + 1))
-        m.d.comb += csr_bus.addr.eq(Cat(cycle[:log2_int(len(wb_bus.sel))], wb_bus.adr))
+        # Define a signal counting from 0 to len(Wishbone SEL) + 1
+        counter = Signal(range(len(wb_bus.sel) + 2))
 
         with m.If(wb_bus.cyc & wb_bus.stb):
-            with m.Switch(cycle):
+            with m.Switch(counter):
                 def segment(index):
                     return slice(index * wb_bus.granularity, (index + 1) * wb_bus.granularity)
 
+                # First, counter cycles through all the SEL bits to check 
+                #   where to expect (read) / send (write) data
                 for index, sel_index in enumerate(wb_bus.sel):
                     with m.Case(index):
+                        if len(wb_bus.sel) > 1:
+                            sel_addr = (
+                                int(digit) for digit in format(
+                                    index, "0{}b".format(log2_int(len(wb_bus.sel)))
+                                )[::-1]
+                            )
+                        else:
+                            sel_addr = ()
+                        m.d.comb += csr_bus.addr.eq(Cat(*sel_addr, wb_bus.adr))
                         if index > 0:
                             # CSR reads are registered, and we need to re-register them.
                             m.d.sync += wb_bus.dat_r[segment(index - 1)].eq(csr_bus.r_data)
                         m.d.comb += csr_bus.r_stb.eq(sel_index & ~wb_bus.we)
                         m.d.comb += csr_bus.w_data.eq(wb_bus.dat_w[segment(index)])
                         m.d.comb += csr_bus.w_stb.eq(sel_index & wb_bus.we)
-                        m.d.sync += cycle.eq(index + 1)
+                        m.d.sync += counter.eq(index + 1)
 
-                with m.Default():
+                # After the last chunk is checked, for reads put the last chunk
+                #   from CSR bus to Wishbone bus; 
+                #   and send ACK to Wishbone bus
+                with m.Case(len(wb_bus.sel)):
                     m.d.sync += wb_bus.dat_r[segment(index)].eq(csr_bus.r_data)
                     m.d.sync += wb_bus.ack.eq(1)
-                    m.d.sync += cycle.eq(0)
+                    m.d.sync += counter.eq(len(wb_bus.sel) + 1)
 
+        # Reset counter value only when CYC and STB are no longer asserted at the same time
         with m.Else():
+            m.d.sync += counter.eq(0)
+
+        # Ensure ACK is only asserted for 1 clock
+        with m.If(wb_bus.ack):
             m.d.sync += wb_bus.ack.eq(0)
-            m.d.sync += cycle.eq(0)
 
         return m
