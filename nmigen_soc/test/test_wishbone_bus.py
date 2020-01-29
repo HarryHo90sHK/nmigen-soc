@@ -298,6 +298,268 @@ class DecoderSimulationTestCase(unittest.TestCase):
             sim.run()
 
 
+class ArbiterTestCase(unittest.TestCase):
+    def setUp(self):
+        self.dut = Arbiter(addr_width=31, data_width=32, granularity=16)
+
+    def test_add_wrong(self):
+        with self.assertRaisesRegex(TypeError,
+                r"Initiator bus must be an instance of wishbone\.Interface, not 'foo'"):
+            self.dut.add("foo")
+
+    def test_add_wrong_addr_width(self):
+        with self.assertRaisesRegex(ValueError,
+                r"Initiator bus has address width 15, which is not the same as arbiter "
+                r"address width 31"):
+            self.dut.add(Interface(addr_width=15, data_width=32, granularity=16))
+
+    def test_add_wrong_granularity(self):
+        with self.assertRaisesRegex(ValueError,
+                r"Initiator bus has granularity 8, which is lesser than "
+                r"the arbiter granularity 16"):
+            self.dut.add(Interface(addr_width=31, data_width=32, granularity=8))
+
+    def test_add_wrong_data_width(self):
+        with self.assertRaisesRegex(ValueError,
+                r"Initiator bus has data width 16, which is not the same as arbiter "
+                r"data width 32"):
+            self.dut.add(Interface(addr_width=31, data_width=16, granularity=16))
+
+    def test_add_wrong_optional_output(self):
+        with self.assertRaisesRegex(ValueError,
+                r"Initiator bus has optional output 'lock', but the arbiter does "
+                r"not have a corresponding input"):
+            self.dut.add(Interface(addr_width=31, data_width=32, granularity=16,
+                                   features={"lock"}))
+
+
+class ArbiterSimulationTestCase(unittest.TestCase):
+    def test_simple(self):
+        dut = Arbiter(addr_width=30, data_width=32, granularity=8,
+                      features={"err", "rty", "stall", "lock", "cti", "bte"})
+        itor_1 = Interface(addr_width=30, data_width=32, granularity=8)
+        dut.add(itor_1)
+        itor_2 = Interface(addr_width=30, data_width=32, granularity=16,
+                      features={"err", "rty", "stall", "lock", "cti", "bte"})
+        dut.add(itor_2)
+
+        def sim_test():
+            yield itor_1.adr.eq(0x7ffffffc >> 2)
+            yield itor_1.cyc.eq(1)
+            yield itor_1.stb.eq(1)
+            yield itor_1.sel.eq(0b1111)
+            yield itor_1.we.eq(1)
+            yield itor_1.dat_w.eq(0x12345678)
+            yield dut.bus.dat_r.eq(0xabcdef01)
+            yield dut.bus.ack.eq(1)
+            yield Delay(1e-7)
+            self.assertEqual((yield dut.bus.adr), 0x7ffffffc >> 2)
+            self.assertEqual((yield dut.bus.cyc), 1)
+            self.assertEqual((yield dut.bus.stb), 1)
+            self.assertEqual((yield dut.bus.sel), 0b1111)
+            self.assertEqual((yield dut.bus.we), 1)
+            self.assertEqual((yield dut.bus.dat_w), 0x12345678)
+            self.assertEqual((yield dut.bus.lock), 1)
+            self.assertEqual((yield dut.bus.cti), CycleType.CLASSIC.value)
+            self.assertEqual((yield dut.bus.bte), BurstTypeExt.LINEAR.value)
+            self.assertEqual((yield itor_1.dat_r), 0xabcdef01)
+            self.assertEqual((yield itor_1.ack), 1)
+
+            yield itor_1.cyc.eq(0)
+            yield itor_2.adr.eq(0xe0000000 >> 2)
+            yield itor_2.cyc.eq(1)
+            yield itor_2.stb.eq(1)
+            yield itor_2.sel.eq(0b10)
+            yield itor_2.we.eq(1)
+            yield itor_2.dat_w.eq(0x43218765)
+            yield itor_2.lock.eq(0)
+            yield itor_2.cti.eq(CycleType.INCR_BURST)
+            yield itor_2.bte.eq(BurstTypeExt.WRAP_4)
+            yield Tick()
+
+            yield dut.bus.err.eq(1)
+            yield dut.bus.rty.eq(1)
+            yield dut.bus.stall.eq(0)
+            yield Delay(1e-7)
+            self.assertEqual((yield dut.bus.adr), 0xe0000000 >> 2)
+            self.assertEqual((yield dut.bus.cyc), 1)
+            self.assertEqual((yield dut.bus.stb), 1)
+            self.assertEqual((yield dut.bus.sel), 0b1100)
+            self.assertEqual((yield dut.bus.we), 1)
+            self.assertEqual((yield dut.bus.dat_w), 0x43218765)
+            self.assertEqual((yield dut.bus.lock), 0)
+            self.assertEqual((yield dut.bus.cti), CycleType.INCR_BURST.value)
+            self.assertEqual((yield dut.bus.bte), BurstTypeExt.WRAP_4.value)
+            self.assertEqual((yield itor_2.dat_r), 0xabcdef01)
+            self.assertEqual((yield itor_2.ack), 1)
+            self.assertEqual((yield itor_2.err), 1)
+            self.assertEqual((yield itor_2.rty), 1)
+            self.assertEqual((yield itor_2.stall), 0)
+
+        with Simulator(dut, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
+            sim.run()
+
+    def test_lock(self):
+        dut = Arbiter(addr_width=30, data_width=32, features={"lock"})
+        itor_1 = Interface(addr_width=30, data_width=32, features={"lock"})
+        dut.add(itor_1)
+        itor_2 = Interface(addr_width=30, data_width=32, features={"lock"})
+        dut.add(itor_2)
+
+        def sim_test():
+            yield itor_1.cyc.eq(1)
+            yield itor_1.lock.eq(1)
+            yield itor_2.cyc.eq(1)
+            yield dut.bus.ack.eq(1)
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 1)
+            self.assertEqual((yield itor_2.ack), 0)
+
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 1)
+            self.assertEqual((yield itor_2.ack), 0)
+
+            yield itor_1.lock.eq(0)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 0)
+            self.assertEqual((yield itor_2.ack), 1)
+
+            yield itor_2.cyc.eq(0)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 1)
+            self.assertEqual((yield itor_2.ack), 0)
+
+            yield itor_1.stb.eq(1)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 1)
+            self.assertEqual((yield itor_2.ack), 0)
+
+            yield itor_1.stb.eq(0)
+            yield itor_2.cyc.eq(1)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 0)
+            self.assertEqual((yield itor_2.ack), 1)
+
+        with Simulator(dut, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
+            sim.run()
+
+    def test_stall(self):
+        dut = Arbiter(addr_width=30, data_width=32, features={"stall"})
+        itor_1 = Interface(addr_width=30, data_width=32, features={"stall"})
+        dut.add(itor_1)
+        itor_2 = Interface(addr_width=30, data_width=32, features={"stall"})
+        dut.add(itor_2)
+
+        def sim_test():
+            yield itor_1.cyc.eq(1)
+            yield itor_2.cyc.eq(1)
+            yield dut.bus.stall.eq(0)
+            yield Delay(1e-6)
+            self.assertEqual((yield itor_1.stall), 0)
+            self.assertEqual((yield itor_2.stall), 1)
+
+            yield dut.bus.stall.eq(1)
+            yield Delay(1e-6)
+            self.assertEqual((yield itor_1.stall), 1)
+            self.assertEqual((yield itor_2.stall), 1)
+
+        with Simulator(dut, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_process(sim_test())
+            sim.run()
+
+    def test_stall_compat(self):
+        dut = Arbiter(addr_width=30, data_width=32)
+        itor_1 = Interface(addr_width=30, data_width=32, features={"stall"})
+        dut.add(itor_1)
+        itor_2 = Interface(addr_width=30, data_width=32, features={"stall"})
+        dut.add(itor_2)
+
+        def sim_test():
+            yield itor_1.cyc.eq(1)
+            yield itor_2.cyc.eq(1)
+            yield Delay(1e-6)
+            self.assertEqual((yield itor_1.stall), 1)
+            self.assertEqual((yield itor_2.stall), 1)
+
+            yield dut.bus.ack.eq(1)
+            yield Delay(1e-6)
+            self.assertEqual((yield itor_1.stall), 0)
+            self.assertEqual((yield itor_2.stall), 1)
+
+        with Simulator(dut, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_process(sim_test())
+            sim.run()
+
+    def test_roundrobin(self):
+        dut = Arbiter(addr_width=30, data_width=32)
+        itor_1 = Interface(addr_width=30, data_width=32)
+        dut.add(itor_1)
+        itor_2 = Interface(addr_width=30, data_width=32)
+        dut.add(itor_2)
+        itor_3 = Interface(addr_width=30, data_width=32)
+        dut.add(itor_3)
+
+        def sim_test():
+            yield itor_1.cyc.eq(1)
+            yield itor_2.cyc.eq(0)
+            yield itor_3.cyc.eq(1)
+            yield dut.bus.ack.eq(1)
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 1)
+            self.assertEqual((yield itor_2.ack), 0)
+            self.assertEqual((yield itor_3.ack), 0)
+
+            yield itor_1.cyc.eq(0)
+            yield itor_2.cyc.eq(0)
+            yield itor_3.cyc.eq(1)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 0)
+            self.assertEqual((yield itor_2.ack), 0)
+            self.assertEqual((yield itor_3.ack), 1)
+
+            yield itor_1.cyc.eq(1)
+            yield itor_2.cyc.eq(1)
+            yield itor_3.cyc.eq(0)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 1)
+            self.assertEqual((yield itor_2.ack), 0)
+            self.assertEqual((yield itor_3.ack), 0)
+
+            yield itor_1.cyc.eq(0)
+            yield itor_2.cyc.eq(1)
+            yield itor_3.cyc.eq(1)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 0)
+            self.assertEqual((yield itor_2.ack), 1)
+            self.assertEqual((yield itor_3.ack), 0)
+
+            yield itor_1.cyc.eq(1)
+            yield itor_2.cyc.eq(0)
+            yield itor_3.cyc.eq(1)
+            yield Tick()
+            yield Delay(1e-7)
+            self.assertEqual((yield itor_1.ack), 0)
+            self.assertEqual((yield itor_2.ack), 0)
+            self.assertEqual((yield itor_3.ack), 1)
+
+        with Simulator(dut, vcd_file=open("test.vcd", "w")) as sim:
+            sim.add_clock(1e-6)
+            sim.add_sync_process(sim_test())
+            sim.run()
+
+
 class InterconnectSharedSimulationTestCase(unittest.TestCase):
     def setUp(self):
         self.shared = Interface(addr_width=30,
@@ -331,13 +593,14 @@ class InterconnectSharedSimulationTestCase(unittest.TestCase):
                                features={"err","cti","bte"},
                                name="sub01")
         self.dut = InterconnectShared(
-            shared_bus=self.shared,
-            masters=[
+            addr_width=30, data_width=32, granularity=8,
+            features={"err","cti","bte"},
+            itors=[
                 self.master01,
                 self.master02
             ],
             targets=[
-                (self.ram.bus, 0), 
+                (self.ram.bus, 0),
                 (self.sub01, (2**21) << 2)
             ]
         )
@@ -352,7 +615,7 @@ class InterconnectSharedSimulationTestCase(unittest.TestCase):
             for _ in range(5):
                 yield self.master01.cyc.eq(1)
                 yield self.master02.cyc.eq(1)
-                yield 
+                yield
                 ram_cyc = (yield self.ram.bus.cyc)
                 sub01_cyc = (yield self.sub01.cyc)
                 if ram_cyc == 1:

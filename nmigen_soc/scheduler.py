@@ -34,12 +34,11 @@ class RoundRobin(Elaboratable):
             with m.Switch(self.grant):
                 for i in range(self.n):
                     with m.Case(i):
-                        with m.If(~self.request[i]):
-                            for j in reversed(range(i+1, i+self.n)):
-                                # If i+1 <= j < n, then t == j;     (after i)
-                                # If n <= j < i+n, then t == j - n  (before i)
-                                t = j % self.n
-                                with m.If(self.request[t]):
-                                    m.d.sync += self.grant.eq(t)
+                        for j in reversed(range(i+1, i+self.n)):
+                            # If i+1 <= j < n, then t == j;     (after i)
+                            # If n <= j < i+n, then t == j - n  (before i)
+                            t = j % self.n
+                            with m.If(self.request[t]):
+                                m.d.sync += self.grant.eq(t)
 
         return m
