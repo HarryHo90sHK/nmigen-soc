@@ -366,13 +366,17 @@ class Arbiter(Elaboratable):
         if self._scheduler == "rr":
             m.submodules.scheduler = scheduler = RoundRobin(self._next_index)
         grant = Signal(self._next_index)
-        m.d.comb += grant.eq(scheduler.grant)
+        m.d.comb += [
+            # CYC should not be indefinitely asserted. (See RECOMMENDATION 3.05, Wishbone B4)
+            scheduler.stb.eq(~self.bus.cyc),
+            grant.eq(scheduler.grant)
+        ]
 
         for signal_name, (_, signal_direction) in self.bus.layout.fields.items():
             # FANOUT signals: only mux the granted master with the interface
             if signal_direction == Direction.FANOUT:
-                master_signals = Array(getattr(master_bus, signal_name) 
-                                       for __, (___, master_bus) 
+                master_signals = Array(getattr(master_bus, signal_name)
+                                       for __, (___, master_bus)
                                        in self._masters.items())
                 m.d.comb += getattr(self.bus, signal_name).eq(master_signals[grant])
             # FANIN signals: ACK and ERR are ORed to all masters;
@@ -422,7 +426,7 @@ class InterconnectShared(Elaboratable):
 
         for target_bus in targets:
             self._targets.append(target_bus)
-        
+
         self.arbiter = Arbiter(
             addr_width=self.addr_width,
             data_width=self.data_width,
