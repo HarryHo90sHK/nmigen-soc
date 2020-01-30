@@ -45,13 +45,14 @@ class Interface(Record):
     data_width : int
         Width of the data signals ("port size" in Wishbone terminology).
         One of 8, 16, 32, 64.
-    granularity : int
+    granularity : int or None
         Granularity of select signals ("port granularity" in Wishbone terminology).
-        One of 8, 16, 32, 64.
+        One of 8, 16, 32, 64. Optional and defaults to None, meaning it is equal
+        to the address width.
     features : iter(str)
         Selects the optional signals that will be a part of this interface.
     alignment : int
-        Resource and window alignment. See :class:`MemoryMap`.
+        Resource and window alignment. Optional. See :class:`MemoryMap`.
     name : str
         Name of the underlying record.
 
@@ -185,12 +186,12 @@ class Decoder(Elaboratable):
         Address width. See :class:`Interface`.
     data_width : int
         Data width. See :class:`Interface`.
-    granularity : int
-        Granularity. See :class:`Interface`
+    granularity : int or None
+        Granularity. Optional. See :class:`Interface`
     features : iter(str)
         Optional signal set. See :class:`Interface`.
     alignment : int
-        Window alignment. See :class:`Interface`.
+        Window alignment. Optional. See :class:`Interface`.
 
     Attributes
     ----------
@@ -313,12 +314,12 @@ class Arbiter(Elaboratable):
         Address width of the shared bus. See :class:`Interface`.
     data_width : int
         Data width of the shared bus. See :class:`Interface`.
-    granularity : int
-        Granularity of the shared bus. See :class:`Interface`.
+    granularity : int or None
+        Granularity of the shared bus. Optional. See :class:`Interface`.
     features : iter(str)
         Optional signal set for the shared bus. See :class:`Interface`.
-    scheduler : str or None
-        Method for bus arbitration. Defaults to "rr" (Round Robin, see
+    scheduler : str
+        Method for bus arbitration. Optional and defaults to "rr" (Round Robin, see
         :class:`scheduler.RoundRobin`).
 
     Attributes
@@ -442,24 +443,36 @@ class InterconnectShared(Elaboratable):
 
     Parameters
     ----------
-    shared_bus : :class:`Interface`
-        Shared bus for the interconnect module between the arbiter and decoder.
-    itors : list of :class:`Interface`
-        List of MASTERs on the arbiter to request access to the shared bus.
-    targets : list of :class:`Interface`
-        List of SLAVEs on the decoder whose accesses are to be targeted by the shared bus.
-
-    Attributes
-    ----------
     addr_width : int
         Address width of the shared bus. See :class:`Interface`.
     data_width : int
         Data width of the shared bus. See :class:`Interface`.
-    granularity : int
-        Granularity of the shared bus. See :class:`Interface`
+    itors : list of (:class:`Interface` OR :class:`Record`)
+        List of MASTERs on the arbiter to request access to the shared bus.
+        If the item is a :class:`Record`, its fields must be named using the
+        convention of :class:`Interface`.
+    targets : list of (:class:`Interface` OR tuple of (:class:`Interface`, int))
+        List of SLAVEs on the decoder whose accesses are to be targeted by the shared bus.
+        If the item is a tuple of (intf, addr), the :class:`Interface`-type intf is added
+        at the (address width + granularity bits)-wide address of the int-type addr.
+    granularity : int or None
+        Granularity of the shared bus. Optional. See :class:`Interface`.
+    features : iter(str)
+        Optional signal set for the shared bus. See :class:`Interface`.
+    scheduler : str
+        Method for bus arbitration for the arbiter. Optional and defaults to "rr" (Round Robin, see
+        :class:`scheduler.RoundRobin`).
+    alignment : int
+        Window alignment for the decoder. Optional. See :class:`Interface`.
+
+    Attributes
+    ----------
+    arbiter : :class:`Arbiter`
+        The arbiter that connects the list of MASTERs to a shared bus.
+    decoder : :class:`Decoder`
+        The decoder that connects the shared bus to the list of SLAVEs.
     """
-    def __init__(self, *, addr_width, data_width, itors, targets, 
-                 scheduler="rr", **kwargs):
+    def __init__(self, *, addr_width, data_width, itors, targets, **kwargs):
         self.addr_width = addr_width
         self.data_width = data_width
 
