@@ -835,7 +835,7 @@ class Field:
                                          parent_class.__name__, name))
 
     def __init__(self, name, *args, access=None, width=1, startbit=None, reset_value=0, desc=None, **kwargs):
-        self._field = _FieldBuilder(name, *args, width=width, **kwargs)
+        self._field = _FieldBuilder(name, width=width, **kwargs)
         if not isinstance(name, str):
             raise TypeError("Name must be a string, not {!r}"
                             .format(name))
@@ -990,7 +990,7 @@ class _FieldBuilder:
         If a str is used, 0 is mapped to the first str object added (name), and the next integer following the current greatest value in the enum list is mapped to the str object (name).
         Within the `with` block, new enums can be added to the field using ``field.e +=``.
     """
-    def __init__(self, name, *, width=1, enums=None, **kwargs):
+    def __init__(self, name, *, width=1, enums=None):
         self._name = name
         self._width = width
         if enums is not None and not isinstance(enums, list):
