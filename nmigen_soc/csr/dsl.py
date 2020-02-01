@@ -269,16 +269,22 @@ class Bank(Elaboratable):
             with m.If(csr_obj.rst_stb | self._bank._reset_strobe):
                 m.d.sync += csr_obj.s.eq(csr_obj.reset_value)
             # Internal Write logic
+            with m.Elif(csr_obj.int_w_stb):
+                m.d.sync += csr_obj.s.eq(csr_obj.int_w_data)
             write_from_logic_by_field = 0
             for _, field in csr_obj._fields.items():
                 write_from_logic_by_field |= field.int_w_stb
-            with m.Elif(csr_obj.int_w_stb):
-                m.d.sync += csr_obj.s.eq(csr_obj.int_w_data)
             with m.Elif(write_from_logic_by_field):
                 for _, field in csr_obj._fields.items():
+                    if field.access.writable():
+                        field_w_mux = Mux(elem.w_stb,
+                                          elem.w_data[field.startbit:field.endbit+1],
+                                          field.s)
+                    else:
+                        field_w_mux = field.s
                     field_int_w_mux = Mux(field.int_w_stb,
                                           field.int_w_data,
-                                          field.s)
+                                          field_w_mux)
                     m.d.sync += field.s.eq(field_int_w_mux)
             # Write logic
             if elem.access.writable():
@@ -528,16 +534,22 @@ class _RegisterStandalone(_RegisterBase, Elaboratable):
         with m.If(self._csr.rst_stb):
             m.d.sync += self._csr.s.eq(self._csr.reset_value)
         # Internal Write logic
+        with m.Elif(self._csr.int_w_stb):
+            m.d.sync += self._csr.s.eq(self._csr.int_w_data)
         write_from_logic_by_field = 0
         for _, field in self._csr._fields.items():
             write_from_logic_by_field |= field.int_w_stb
-        with m.Elif(self._csr.int_w_stb):
-            m.d.sync += self._csr.s.eq(self._csr.int_w_data)
         with m.Elif(write_from_logic_by_field):
             for _, field in self._csr._fields.items():
+                if field.access.writable():
+                    field_w_mux = Mux(self._bus.w_stb,
+                                      self._bus.w_data[field.startbit:field.endbit+1],
+                                      field.s)
+                else:
+                    field_w_mux = field.s
                 field_int_w_mux = Mux(field.int_w_stb,
                                       field.int_w_data,
-                                      field.s)
+                                      field_w_mux)
                 m.d.sync += field.s.eq(field_int_w_mux)
         # Write logic
         if self._bus.access.writable():
