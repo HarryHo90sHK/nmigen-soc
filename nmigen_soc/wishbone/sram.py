@@ -47,15 +47,8 @@ class SRAM(Elaboratable):
                             .format(memory))
         self.memory = memory
         self.read_only = read_only
-        # Define total address space:
-        # - Base: equals memory.depth
-        # - Has an additional ReadPort: add rdport.depth
-        # - Has an additional WirtePort: add wrport.depth
-        self._memdepth = self.memory.depth * 2
-        if not read_only:
-            self._memdepth += self.memory.depth
         if bus is None:
-            bus = Interface(addr_width=max(0, log2_int(self._memdepth, need_pow2=False)),
+            bus = Interface(addr_width=log2_int(self.memory.depth, need_pow2=False),
                             data_width=self.memory.width,
                             granularity=granularity,
                             features=features,
