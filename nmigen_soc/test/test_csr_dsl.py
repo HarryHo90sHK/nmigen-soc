@@ -841,25 +841,43 @@ class BankTestCase(unittest.TestCase):
             yield self.dut.r.reg_8_r.int_w_stb.eq(1)
             yield self.dut.r.reg_16_rw.int_w_stb.eq(1)
             yield self.dut.r.reg_4_w.int_w_stb.eq(1)
-            # - deassert all per-element reset strobe
-            #   (rst_stb per element must be driven individually)
-            yield self.dut.r.reg_8_r.rst_stb.eq(0)
+            # - assign internal write data (will be used)
+            yield self.dut.r.reg_8_r.int_w_data.eq(0xCC)
+            yield self.dut.r.reg_16_rw.int_w_data.eq(0xDDDD)
+            yield self.dut.r.reg_4_w.int_w_data.eq(0xE)
+            # - do not deassert any internal write strobes; at the same time:
+            # - assert only reg_8_r per-element reset strobe
+            #   (rst_stb per element overrides internal writes)
+            yield self.dut.r.reg_8_r.rst_stb.eq(1)
             yield self.dut.r.reg_16_rw.rst_stb.eq(0)
             yield self.dut.r.reg_4_w.rst_stb.eq(0)
+            yield
+            yield
+            # Check register signal: only reg_8_r resets, while the rest is internally-written
+            self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
+            self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0xDDDD)
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xE)
+            # - while internal write strobes stays asserted, and
+            # - while other per-element reset strobes stays deasserted:
             # - assert bank bus reset strobe
-            #   (rst_stb per element is independent from bank rst_stb)
+            #   (rst_stb per element can be overridden by asserted bank rst_stb)
             yield self.dut.rst_stb.eq(1)
             yield
-            # Check register signal, without deasserting bus reset strobe or any write strobes
+            yield
+            # Check register signal: all signals reset
             self.assertEqual((yield get_reg_csr_sig("reg_8_r")), 0x22)
             self.assertEqual((yield get_reg_csr_sig("reg_16_rw")), 0x9876)
-            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0xb)
-            # read reg_16_rw, deasserting all write strobes but NOT bus reset strobe
+            self.assertEqual((yield get_reg_csr_sig("reg_4_w")), 0x4)
+            # read reg_16_rw, deasserting all write strobes and per-element reset strobe;
+            # but NOT bank reset strobe
             yield bus_to_test.r_stb.eq(1)
             yield bus_to_test.w_stb.eq(0)
             yield self.dut.r.reg_8_r.int_w_stb.eq(0)
             yield self.dut.r.reg_16_rw.int_w_stb.eq(0)
             yield self.dut.r.reg_4_w.int_w_stb.eq(0)
+            yield self.dut.r.reg_8_r.rst_stb.eq(0)
+            yield self.dut.r.reg_16_rw.rst_stb.eq(0)
+            yield self.dut.r.reg_4_w.rst_stb.eq(0)
             expected_r_data[4] = 0x16                           # [8:5] is write-only
             expected_r_data[5] = 0x98                           # The rest can be read
             expected_r_data[6] = 0x00                           # except after addr=5
