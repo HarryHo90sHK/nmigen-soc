@@ -828,7 +828,7 @@ class Field:
     startbit : int or None
         Location of the first bit of the field in the CSR to which the field is added to.
         If unspecified, the first bit is set to the bit immediately after the current final bit of the CSR.
-    reset : int
+    reset_value : int
         Default value of the field.
         If unspecified, the reset value is 0.
     desc : str or None
